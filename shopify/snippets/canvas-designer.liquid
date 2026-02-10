@@ -783,12 +783,12 @@
                     const $form = $('.shopify-product-form');
                     if ($form.length) {
                         const idx = state.savedSheets.indexOf(sheet);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Url]" value="${tempUrl}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Name]" value="${fileName}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Width]" value="${sheet.format.width}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Height]" value="${sheet.format.height}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Format]" value="${sheet.options.formatName}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_PrintSmall]" value="${sheet.options.printSmallElements ? 'Ja' : 'Nein'}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Url]" value="${tempUrl}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Name]" value="${fileName}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options.formatName}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} PrintSmall]" value="${sheet.options.printSmallElements ? 'Ja' : 'Nein'}">`);
                     }
                     return sheet;
                 };
@@ -1414,7 +1414,7 @@
                                             <span class="text-blue-600 font-medium">${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}</span>
                                         </div>
                                     </div>
-                                    <div class="flex items-center gap-2">
+                                    <div class="flex items-center flex-wrap gap-2">
                                         <button class="edit-sheet-btn flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition flex items-center justify-center gap-1" data-index="${index}">
                                             Projekt<br/>bearbeiten
                                         </button>
@@ -2059,16 +2059,16 @@
                         if (!variantId) { showToast('Produkt ID fehlt', 'error'); return; }
                         
                         // Clear existing hidden property inputs to avoid duplication
-                        $mainForm.find('input[name^="properties[Frame_"]').remove();
+                        $mainForm.find('input[name^="properties[Frame"]').remove();
                         
                         // Add properties to the form
                         saved.forEach((sheet, idx) => {
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Url]" value="${sheet.savedUrl}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Name]" value="${sheet.savedFileName || ''}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Width]" value="${sheet.format.width}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Height]" value="${sheet.format.height}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Format]" value="${sheet.options?.formatName || ''}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_PrintSmall]" value="${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Url]" value="${sheet.savedUrl}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Name]" value="${sheet.savedFileName || ''}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options?.formatName || ''}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} PrintSmall]" value="${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
                         });
                         
                         // Update quantity
