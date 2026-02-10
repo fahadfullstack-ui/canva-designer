@@ -606,6 +606,169 @@
                 const cmToPx = cm => cm * PX_PER_CM;
                 const pxToCm = px => px / PX_PER_CM;
                 const generateId = (prefix = 'item') => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                const getSheetHash = (items, format) => {
+                    const payload = {
+                        format: { w: format.width, h: format.height },
+                        items: items.map(i => ({ x: i.x, y: i.y, w: i.width, h: i.height, r: i.rotation, g: i.groupId, s: i.src, q: i.quantity }))
+                    };
+                    return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+                };
+                const API_UPLOAD_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk';
+                const API_FINALIZE_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk/finalize';
+                async function uploadFileInChunks(file, productId, dimensions, sessionId, chunkSize, id) {
+                    let visualProgress = 0;
+                    const smoothUpdate = (target) => {
+                        visualProgress += (target - visualProgress) * 0.15;
+                        const $bar = $(`.file_percent_${id}`);
+                        const $label = $(`.file_percent_label_${id}`);
+                        if ($bar.length) $bar.css('width', `${visualProgress}%`);
+                        if ($label.length) $label.text(`${visualProgress.toFixed(1)}%`);
+                    };
+                    const totalChunks = Math.ceil(file.size / chunkSize);
+                    const UPLOAD_PERCENT = 90;
+                    let uploadedBytes = 0;
+                    for (let i = 0; i < totalChunks; i++) {
+                        const start = i * chunkSize;
+                        const end = Math.min(start + chunkSize, file.size);
+                        const chunk = file.slice(start, end);
+                        const formData = new FormData();
+                        formData.append('file', chunk);
+                        formData.append('fileName', file.name);
+                        formData.append('chunkIndex', i);
+                        formData.append('totalChunks', totalChunks);
+                        formData.append('sessionId', sessionId);
+                        const resp = await fetch(API_UPLOAD_URL, { method: 'POST', body: formData });
+                        if (!resp.ok) throw new Error(`Chunk ${i} upload failed`);
+                        uploadedBytes += chunk.size;
+                        const percent = Math.min((uploadedBytes / file.size) * UPLOAD_PERCENT, UPLOAD_PERCENT);
+                        smoothUpdate(percent);
+                    }
+                    const finalizeResp = await fetch(API_FINALIZE_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ originalFileName: file.name, sessionId, productId, dimensions })
+                    });
+                    if (!finalizeResp.ok) throw new Error('Finalize upload failed');
+                    smoothUpdate(100);
+                    return await finalizeResp.json();
+                }
+                async function newUploadFile(file, id) {
+                    const productId = $('.shopify-product-form input[name="id"]').val();
+                    const sessionId = $('.session_id').val();
+                    const dims = {
+                        widthCm: state.selectedFormat.width,
+                        heightCm: state.selectedFormat.height,
+                        widthPx: Math.round(cmToPx(state.selectedFormat.width)),
+                        heightPx: Math.round(cmToPx(state.selectedFormat.height))
+                    };
+                    const res = await uploadFileInChunks(file, productId, dims, sessionId, 1024 * 1024, id);
+                    if (res) {
+                        if (typeof window.UpdateFileMeta === 'function') {
+                            window.UpdateFileMeta(id, 'uploaded_name', res.fileName);
+                            window.UpdateFileMeta(id, 'fileId', res.fileId);
+                            window.UpdateFileMeta(id, 'tempUrl', res.tempUrl);
+                            window.UpdateFileMeta(id, 'status', 'Uploaded');
+                            window.UpdateFileMeta(id, 'imagesCount', res.pdfCount);
+                        }
+                        $(`.del_file_${id}`).attr('fid', res.fileId);
+                        $('.shopify-product-form').append(`<input type="hidden" class="file_width_${id}" name="properties[Width_${id}]" value="${dims.widthCm}" />`);
+                        $('.shopify-product-form').append(`<input type="hidden" class="file_height_${id}" name="properties[Height_${id}]" value="${dims.heightCm}" />`);
+                        $('.shopify-product-form').append(`<input type="hidden" class="file_url_${id}" name="properties[_File_${id}]" value="${res.tempUrl}" />`);
+                        $('.shopify-product-form').append(`<input type="hidden" class="file_name_${id}" name="properties[_dtf_file_name_${id}]" value="${res.fileName}" />`);
+                        $(`.fs_loader_${id}`).fadeOut(100);
+                        $(`.fs_uploaded_${id}`).fadeIn(100);
+                        $(`.fileInput_${id}`).val('');
+                        if (typeof window.UpdateTotalFiles === 'function') window.UpdateTotalFiles(id);
+                        return res;
+                    } else {
+                        $(`.fs_loader_${id}`).fadeOut(100);
+                        $(`.fs_failed_${id}`).fadeIn(100);
+                        return null;
+                    }
+                }
+                const renderSheetToImage = async (sheet) => {
+                    const widthPx = Math.round(cmToPx(sheet.format.width));
+                    const heightPx = Math.round(cmToPx(sheet.format.height));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = widthPx;
+                    canvas.height = heightPx;
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, widthPx, heightPx);
+                    for (const item of sheet.items) {
+                        if (!item.src) continue;
+                        const img = await new Promise(resolve => {
+                            const im = new Image();
+                            im.crossOrigin = 'anonymous';
+                            im.onload = () => resolve(im);
+                            im.src = item.src;
+                        });
+                        const x = cmToPx(item.x);
+                        const y = cmToPx(item.y);
+                        const w = cmToPx(item.width);
+                        const h = cmToPx(item.height);
+                        const rad = (item.rotation || 0) * Math.PI / 180;
+                        ctx.save();
+                        ctx.translate(x + w / 2, y + h / 2);
+                        ctx.rotate(rad);
+                        ctx.drawImage(img, -w / 2, -h / 2, w, h);
+                        ctx.restore();
+                    }
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+                    const fileName = `sheet_${Date.now()}.png`;
+                    const file = new File([blob], fileName, { type: 'image/png' });
+                    return { file, fileName };
+                };
+                const saveCurrentSheet = async () => {
+                    let sheet = null;
+                    if (state.currentSheetIndex !== null) {
+                        sheet = state.savedSheets[state.currentSheetIndex];
+                        sheet.items = [...state.items];
+                        sheet.format = state.selectedFormat;
+                    } else {
+                        if (!state.items.length) return null;
+                        sheet = { id: Date.now(), format: state.selectedFormat, items: [...state.items], price: state.selectedFormat.price };
+                        state.savedSheets.push(sheet);
+                        state.currentSheetIndex = state.savedSheets.length - 1;
+                    }
+                    const hash = getSheetHash(sheet.items, sheet.format);
+                    const { file, fileName } = await renderSheetToImage(sheet);
+                    let uploadRes = null;
+                    try {
+                        uploadRes = await newUploadFile(file, sheet.id);
+                    } catch (e) {
+                        uploadRes = null;
+                    }
+                    let tempUrl = null;
+                    let fileId = null;
+                    if (uploadRes && uploadRes.tempUrl) {
+                        tempUrl = uploadRes.tempUrl;
+                        fileId = uploadRes.fileId || null;
+                    } else {
+                        tempUrl = URL.createObjectURL(file);
+                    }
+                    sheet.savedUrl = tempUrl;
+                    sheet.savedFileName = fileName;
+                    sheet.fileId = fileId;
+                    sheet.lastSavedHash = hash;
+                    sheet.options = {
+                        formatId: state.selectedFormat.id,
+                        formatName: state.selectedFormat.name,
+                        width: state.selectedFormat.width,
+                        height: state.selectedFormat.height,
+                        printSmallElements: state.printSmallElements
+                    };
+                    const $form = $('.shopify-product-form');
+                    if ($form.length) {
+                        const idx = state.savedSheets.indexOf(sheet);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Url]" value="${tempUrl}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Name]" value="${fileName}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Width]" value="${sheet.format.width}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Height]" value="${sheet.format.height}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_Format]" value="${sheet.options.formatName}">`);
+                        $form.append(`<input type="hidden" name="properties[Frame_${idx}_PrintSmall]" value="${sheet.options.printSmallElements ? 'Ja' : 'Nein'}">`);
+                    }
+                    return sheet;
+                };
 
                 // Image compression to reduce memory usage - compresses large images
                 const compressImage = (file, maxWidth = 2000, quality = 0.8) => {
@@ -1066,6 +1229,18 @@
                     `).on('click', () => openOrderModal());
                     $tabs.append($orderBtn);
 
+                    const $saveBtn = $(`
+                        <button id="save-sheet-btn" class="flex items-center gap-2 px-4 py-2.5 ml-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all duration-200">
+                            <i data-lucide="save" class="size-5"></i>
+                            <span>Speichern</span>
+                        </button>
+                    `).on('click', async () => {
+                        if (!state.items.length && state.currentSheetIndex === null) return;
+                        await saveCurrentSheet();
+                        updateUI();
+                    });
+                    $tabs.append($saveBtn);
+
                     // Add Close button (X) - to close canvas
                     const $closeBtn = $(`
                         <button id="close-canvas-btn" class="flex items-center justify-center w-10 h-10 ml-3 bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-xl transition-all duration-200" title="Schließen">
@@ -1081,17 +1256,22 @@
 
                 // Switch to a saved sheet for editing
                 const switchToSheet = (index) => {
-                    // Save current items to current sheet if editing one
-                    if (state.currentSheetIndex !== null && state.items.length > 0) {
-                        state.savedSheets[state.currentSheetIndex].items = [...state.items];
+                    if (state.currentSheetIndex !== null) {
+                        const current = state.savedSheets[state.currentSheetIndex];
+                        const currentHash = getSheetHash(state.items, state.selectedFormat);
+                        const dirty = current.lastSavedHash !== currentHash;
+                        if (dirty) {
+                            const proceed = confirm('Änderungen sichern? OK = Speichern, Abbrechen = Verwerfen');
+                            if (proceed) {
+                                saveCurrentSheet();
+                            } else {
+                                current.items = [...state.items];
+                                current.format = state.selectedFormat;
+                            }
+                        }
                     } else if (state.currentSheetIndex === null && state.items.length > 0) {
-                        // Save current "new" sheet
-                        state.savedSheets.push({
-                            id: Date.now(),
-                            format: state.selectedFormat,
-                            items: [...state.items],
-                            price: state.selectedFormat.price
-                        });
+                        state.savedSheets.push({ id: Date.now(), format: state.selectedFormat, items: [...state.items], price: state.selectedFormat.price });
+                        state.currentSheetIndex = state.savedSheets.length - 1;
                     }
 
                     // Switch to requested sheet
@@ -1124,7 +1304,7 @@
                     let totalProducts = 0;
 
                     // Render each saved sheet as a card
-                    state.savedSheets.forEach((sheet, index) => {
+                    state.savedSheets.filter(s => !!s.savedUrl).forEach((sheet, index) => {
                         totalProducts++;
                         totalPrice += sheet.price || sheet.format.price;
 
@@ -1149,66 +1329,61 @@
 
                         const $card = $(`
                             <div class="bg-white rounded-2xl transition-all duration-300 overflow-hidden border border-slate-100 group">
-                                <div class="relative h-56 flex items-center justify-center p-4">
-                                    <div class="relative overflow-hidden" style="width: ${previewW}px; height: ${previewH}px; background: #ffffff;">
-                                        ${previewItemsHtml || '<div class="absolute inset-0 flex items-center justify-center text-slate-400 text-xs">Leer</div>'}
+                                <div class="grid grid-cols-2 gap-0">
+                                    <div class="relative h-56 flex items-center justify-center p-4">
+                                        <div class="relative overflow-hidden" style="width: ${previewW}px; height: ${previewH}px; background: #ffffff;">
+                                            ${previewItemsHtml || '<div class="absolute inset-0 flex items-center justify-center text-slate-400 text-xs">Leer</div>'}
+                                        </div>
+                                        <div class="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-600">
+                                            Bogen ${index + 1}
+                                        </div>
                                     </div>
-                                    <div class="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-600">
-                                        Bogen ${index + 1}
-                                    </div>
-                                </div>
-                                <!-- Quantity & Info Area -->
-                                <div class="p-4">
-                                    <!-- Quantity Selector Row -->
-                                    <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">
+                                    <div class="p-4 border-l border-slate-100">
+                                        <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">
+                                            <div class="flex items-center gap-2">
+                                                <input type="number" value="1" min="1" class="sheet-qty w-12 text-center border border-slate-200 rounded-lg py-1 text-sm font-semibold" data-index="${index}" />
+                                                <span class="text-slate-500 text-sm">St</span>
+                                            </div>
+                                            <div class="flex items-center gap-1">
+                                                <button class="qty-minus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
+                                                    <i data-lucide="minus" class="size-4 text-slate-600"></i>
+                                                </button>
+                                                <button class="qty-plus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
+                                                    <i data-lucide="plus" class="size-4 text-slate-600"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-1 text-xs text-slate-600 mb-3">
+                                            <div class="flex gap-1">
+                                                <span>Format:</span>
+                                                <span class="text-blue-600 font-medium">${sheet.options?.formatName || sheet.format.width + ' x ' + sheet.format.height + ' cm'}</span>
+                                            </div>
+                                            <div class="flex gap-1">
+                                                <span>Breite:</span>
+                                                <span class="text-blue-600 font-medium">${sheet.format.width} cm</span>
+                                            </div>
+                                            <div class="flex gap-1">
+                                                <span>Höhe:</span>
+                                                <span class="text-blue-600 font-medium">${sheet.format.height} cm</span>
+                                            </div>
+                                            <div class="flex gap-1">
+                                                <span>Druckeinstellung:</span>
+                                                <span class="text-blue-600 font-medium">${(sheet.options?.printSmallElements ?? true) ? 'Elemente < 1mm drucken: Ja' : 'Elemente < 1mm drucken: Nein'}</span>
+                                            </div>
+                                        </div>
                                         <div class="flex items-center gap-2">
-                                            <input type="number" value="1" min="1" class="sheet-qty w-12 text-center border border-slate-200 rounded-lg py-1 text-sm font-semibold" data-index="${index}" />
-                                            <span class="text-slate-500 text-sm">St</span>
-                                        </div>
-                                        <div class="flex items-center gap-1">
-                                            <button class="qty-minus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
-                                                <i data-lucide="minus" class="size-4 text-slate-600"></i>
+                                            <button class="edit-sheet-btn flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition flex items-center justify-center gap-1" data-index="${index}">
+                                                Projekt<br/>bearbeiten
                                             </button>
-                                            <button class="qty-plus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
-                                                <i data-lucide="plus" class="size-4 text-slate-600"></i>
+                                            <button class="delete-sheet-btn p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
+                                                <i data-lucide="trash-2" class="size-4"></i>
+                                                <span class="text-xs">Löschen</span>
+                                            </button>
+                                            <button class="duplicate-sheet-btn p-2 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
+                                                <i data-lucide="copy" class="size-4"></i>
+                                                <span class="text-xs">Duplizieren</span>
                                             </button>
                                         </div>
-                                    </div>
-                                    
-                                    <!-- Product Info -->
-                                    <div class="space-y-1 text-xs text-slate-500 mb-3">
-                                        <div class="flex gap-1">
-                                            <span>Produktbreite:</span>
-                                            <span class="text-blue-600 font-medium">${sheet.format.width} Zentimeter</span>
-                                        </div>
-                                        <div class="flex gap-1">
-                                            <span>Produkthöhe:</span>
-                                            <span class="text-blue-600 font-medium">${sheet.format.height} Zentimeter</span>
-                                        </div>
-                                        <div class="flex gap-1">
-                                            <span>Elemente unter 1 mm mit drucken?</span>
-                                            <span class="text-blue-600 font-medium">Ja</span>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Change Size Link -->
-                                    <button class="text-xs text-slate-400 hover:text-blue-600 transition mb-4 block">
-                                        Größe dieses Blattes ändern
-                                    </button>
-                                    
-                                    <!-- Action Buttons -->
-                                    <div class="flex items-center gap-2">
-                                        <button class="edit-sheet-btn flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition flex items-center justify-center gap-1" data-index="${index}">
-                                            Projekt<br/>bearbeiten
-                                        </button>
-                                        <button class="delete-sheet-btn p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
-                                            <i data-lucide="trash-2" class="size-4"></i>
-                                            <span class="text-xs">Löschen</span>
-                                        </button>
-                                        <button class="duplicate-sheet-btn p-2 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
-                                            <i data-lucide="copy" class="size-4"></i>
-                                            <span class="text-xs">Duplizieren</span>
-                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -1812,15 +1987,23 @@
                     });
 
                     $('#btn-add-to-cart').on('click', () => {
-                        const total = state.savedSheets.reduce((sum, s) => sum + s.price, 0).toFixed(2);
-                        alert(`${state.savedSheets.length} Bögen wurden zum Warenkorb hinzugefügt!\nGesamt: €${total}`);
+                        const saved = state.savedSheets.filter(s => !!s.savedUrl);
+                        if (!saved.length) { alert('Keine gespeicherten Bögen.'); return; }
+                        const $form = $('.shopify-product-form');
+                        if (!$form.length) { alert('Produktformular nicht gefunden.'); return; }
+                        $form.find('input[name^="properties[Frame_"]').remove();
+                        saved.forEach((sheet, idx) => {
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_Url]" value="${sheet.savedUrl}">`);
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_Name]" value="${sheet.savedFileName || ''}">`);
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_Width]" value="${sheet.format.width}">`);
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_Height]" value="${sheet.format.height}">`);
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_Format]" value="${sheet.options?.formatName || ''}">`);
+                            $form.append(`<input type="hidden" name="properties[Frame_${idx}_PrintSmall]" value="${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
+                        });
+                        const quantityInput = $form.find('input[name="quantity"]');
+                        if (quantityInput.length) quantityInput.val(saved.length);
+                        $form.trigger('submit');
                         $('#order-modal').addClass('hidden');
-                        // Reset state
-                        state.savedSheets = [];
-                        state.items = [];
-                        state.currentSheetIndex = null;
-                        state.selectedItemId = null;
-                        updateUI();
                     });
 
                     $(window).on('mousemove', (e) => {
