@@ -1438,15 +1438,18 @@
 
                         // Delete sheet handler
                         $card.find('.delete-sheet-btn').on('click', () => {
-                            state.savedSheets.splice(index, 1);
-                            if (state.currentSheetIndex === index) {
-                                state.currentSheetIndex = null;
-                                state.items = [];
-                            } else if (state.currentSheetIndex > index) {
-                                state.currentSheetIndex--;
+                            const realIndex = state.savedSheets.indexOf(sheet);
+                            if (realIndex > -1) {
+                                state.savedSheets.splice(realIndex, 1);
+                                if (state.currentSheetIndex === realIndex) {
+                                    state.currentSheetIndex = null;
+                                    state.items = [];
+                                } else if (state.currentSheetIndex > realIndex) {
+                                    state.currentSheetIndex--;
+                                }
+                                openOrderModal(); // Refresh modal
+                                updateUI();
                             }
-                            openOrderModal(); // Refresh modal
-                            updateUI();
                         });
 
                         // Duplicate sheet handler
@@ -1455,7 +1458,11 @@
                                 id: Date.now(),
                                 format: { ...sheet.format },
                                 items: sheet.items.map(i => ({ ...i, id: Date.now() + Math.random() })),
-                                price: sheet.price || sheet.format.price
+                                price: sheet.price || sheet.format.price,
+                                savedUrl: sheet.savedUrl,
+                                savedFileName: sheet.savedFileName,
+                                lastSavedHash: sheet.lastSavedHash,
+                                options: sheet.options ? { ...sheet.options } : undefined
                             };
                             state.savedSheets.push(duplicate);
                             openOrderModal(); // Refresh modal
