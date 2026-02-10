@@ -1148,14 +1148,12 @@
                         }).join('');
 
                         const $card = $(`
-                            <div class="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 group">
-                                <!-- Full Sheet Preview Frame -->
-                                <div class="relative h-56 bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center p-4">
-                                    <!-- Canvas Frame (overflow hidden to contain items) -->
-                                    <div class="relative shadow-lg rounded overflow-hidden group-hover:shadow-xl transition-all duration-300 group-hover:scale-[1.02]" style="width: ${previewW}px; height: ${previewH}px; background: #C2C5CC;">
+                            <div class="bg-white rounded-2xl transition-all duration-300 overflow-hidden border border-slate-100 group">
+                                <div class="relative h-56 flex items-center justify-center p-4">
+                                    <div class="relative overflow-hidden" style="width: ${previewW}px; height: ${previewH}px; background: #ffffff;">
                                         ${previewItemsHtml || '<div class="absolute inset-0 flex items-center justify-center text-slate-400 text-xs">Leer</div>'}
                                     </div>
-                                    <div class="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-600 shadow">
+                                    <div class="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-600">
                                         Bogen ${index + 1}
                                     </div>
                                 </div>
