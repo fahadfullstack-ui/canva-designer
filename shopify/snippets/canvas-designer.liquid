@@ -2050,46 +2050,53 @@
                     $('#btn-add-to-cart').on('click', async () => {
                         const saved = state.savedSheets.filter(s => !!s.savedUrl);
                         if (!saved.length) { showToast('Keine gespeicherten Bögen', 'info'); return; }
-                        const variantId = $('.shopify-product-form input[name="id"]').val();
+                        
+                        // Find the main product form
+                        const $mainForm = $('.shopify-product-form, form[action="/cart/add"]');
+                        if (!$mainForm.length) { showToast('Produktformular nicht gefunden', 'error'); return; }
+                        
+                        const variantId = $mainForm.find('input[name="id"]').val();
                         if (!variantId) { showToast('Produkt ID fehlt', 'error'); return; }
-                        const properties = {};
+                        
+                        // Clear existing hidden property inputs to avoid duplication
+                        $mainForm.find('input[name^="properties[Frame_"]').remove();
+                        
+                        // Add properties to the form
                         saved.forEach((sheet, idx) => {
-                            properties[`Frame_${idx}_Url`] = sheet.savedUrl;
-                            properties[`Frame_${idx}_Name`] = sheet.savedFileName || '';
-                            properties[`Frame_${idx}_Width`] = sheet.format.width;
-                            properties[`Frame_${idx}_Height`] = sheet.format.height;
-                            properties[`Frame_${idx}_Format`] = sheet.options?.formatName || '';
-                            properties[`Frame_${idx}_PrintSmall`] = (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein';
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Url]" value="${sheet.savedUrl}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Name]" value="${sheet.savedFileName || ''}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Width]" value="${sheet.format.width}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Height]" value="${sheet.format.height}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_Format]" value="${sheet.options?.formatName || ''}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[Frame_${idx}_PrintSmall]" value="${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
                         });
-                        try {
-                            const resp = await fetch('/cart/add.js', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                                body: JSON.stringify({ id: variantId, quantity: saved.length, properties })
-                            });
-                            if (!resp.ok) throw new Error('Add to cart failed');
-                            const cartItem = await resp.json();
-                            showToast('Zum Warenkorb hinzugefügt');
-                            $('#order-modal').addClass('hidden');
-                            $('#nw-canvas').fadeOut(200);
-                            state.savedSheets = [];
-                            state.items = [];
-                            state.currentSheetIndex = null;
-                            state.selectedItemId = null;
-                            updateUI();
-                            try {
-                                const cartResp = await fetch('/cart.js', { headers: { 'Accept': 'application/json' } });
-                                if (cartResp.ok) {
-                                    const cart = await cartResp.json();
-                                    const count = cart.item_count;
-                                    const $countEl = $('#cart-count, .cart-count').first();
-                                    if ($countEl.length) $countEl.text(count);
-                                    $(document).trigger('cart:updated', cart);
-                                }
-                            } catch (_) {}
-                        } catch (e) {
-                            showToast('Fehler beim Hinzufügen', 'error');
+                        
+                        // Update quantity
+                        const $qtyInput = $mainForm.find('input[name="quantity"]');
+                        if ($qtyInput.length) {
+                            $qtyInput.val(saved.length);
+                        } else {
+                             $mainForm.append(`<input type="hidden" name="quantity" value="${saved.length}">`);
                         }
+                        
+                        // Close modal and designer
+                        $('#order-modal').addClass('hidden');
+                        $('#nw-canvas').fadeOut(200);
+                        
+                        // Trigger the main add to cart button
+                        const $submitBtn = $mainForm.find('[type="submit"], [name="add"], .product-form__submit, .add-to-cart-btn').first();
+                        if ($submitBtn.length) {
+                            $submitBtn.click();
+                        } else {
+                            $mainForm.submit();
+                        }
+                        
+                        // Reset state
+                        state.savedSheets = [];
+                        state.items = [];
+                        state.currentSheetIndex = null;
+                        state.selectedItemId = null;
+                        updateUI();
                     });
 
                     $(window).on('mousemove', (e) => {
