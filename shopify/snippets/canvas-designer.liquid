@@ -1,0 +1,1999 @@
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+    /* Performance optimizations */
+    .canvas-item {
+        contain: layout style;
+        will-change: transform;
+        transform: translateZ(0);
+        /* Force GPU acceleration */
+    }
+
+    .canvas-container {
+        cursor: grab;
+        contain: layout;
+    }
+
+    .canvas-container:active {
+        cursor: grabbing;
+    }
+
+    .item-active {
+        border: 2px solid #4f46e5;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+    }
+
+    .item-collision {
+        border: 2px solid #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    }
+
+    /* Resize Handles - Canva-style large handles */
+    .item-handle {
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        background: white;
+        border: 4px solid #4f46e5;
+        border-radius: 50%;
+        opacity: 0;
+        transition: opacity 0.15s;
+        z-index: 25;
+        pointer-events: all;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.5);
+    }
+
+    /* Expanded hit area using pseudo-element */
+    .item-handle::before {
+        content: '';
+        position: absolute;
+        top: -10px;
+        left: -10px;
+        right: -10px;
+        bottom: -10px;
+        border-radius: 50%;
+    }
+
+    .item-active .item-handle {
+        opacity: 1;
+    }
+
+    .item-handle:hover {
+        background: #4f46e5;
+        border-color: #3730a3;
+        transform: scale(1.1);
+    }
+
+    /* Corner handles - positioned outside item bounds */
+    .handle-nw {
+        top: -14px;
+        left: -14px;
+        cursor: nwse-resize;
+    }
+
+    .handle-ne {
+        top: -14px;
+        right: -14px;
+        cursor: nesw-resize;
+    }
+
+    .handle-sw {
+        bottom: -14px;
+        left: -14px;
+        cursor: nesw-resize;
+    }
+
+    .handle-se {
+        bottom: -14px;
+        right: -14px;
+        cursor: nwse-resize;
+    }
+
+    /* Edge handles - slightly smaller */
+    .handle-n,
+    .handle-s,
+    .handle-e,
+    .handle-w {
+        width: 22px;
+        height: 22px;
+    }
+
+    .handle-n {
+        top: -11px;
+        left: 50%;
+        transform: translateX(-50%);
+        cursor: ns-resize;
+    }
+
+    .handle-n:hover {
+        transform: translateX(-50%) scale(1.1);
+    }
+
+    .handle-s {
+        bottom: -11px;
+        left: 50%;
+        transform: translateX(-50%);
+        cursor: ns-resize;
+    }
+
+    .handle-s:hover {
+        transform: translateX(-50%) scale(1.1);
+    }
+
+    .handle-e {
+        right: -11px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: ew-resize;
+    }
+
+    .handle-e:hover {
+        transform: translateY(-50%) scale(1.1);
+    }
+
+    .handle-w {
+        left: -11px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: ew-resize;
+    }
+
+    .handle-w:hover {
+        transform: translateY(-50%) scale(1.1);
+    }
+
+    /* Rotation Handle - Large blue circular style like Canva */
+    .handle-rotate {
+        top: -80px;
+        left: 50%;
+        transform: translateX(-50%);
+        cursor: grab;
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        border: 3px solid #1d4ed8;
+        width: 44px;
+        height: 44px;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4), 0 0 0 3px rgba(255, 255, 255, 0.6);
+    }
+
+    .handle-rotate::before {
+        top: -14px;
+        left: -14px;
+        right: -14px;
+        bottom: -14px;
+    }
+
+    .handle-rotate:hover {
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        border-color: #1e40af;
+        transform: translateX(-50%) scale(1.1);
+        cursor: grabbing;
+        box-shadow: 0 6px 16px rgba(37, 99, 235, 0.5), 0 0 0 3px rgba(255, 255, 255, 0.8);
+    }
+
+    .handle-rotate::after {
+        content: '↻';
+        color: white;
+        font-size: 22px;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    /* Rotation connector line - longer neck */
+    .rotate-connector {
+        position: absolute;
+        top: -68px;
+        left: 50%;
+        width: 3px;
+        height: 55px;
+        background: linear-gradient(to bottom, #3b82f6, #4f46e5);
+        transform: translateX(-50%);
+        pointer-events: none;
+        border-radius: 2px;
+        box-shadow: 0 0 4px rgba(59, 130, 246, 0.3);
+    }
+
+    /* Drag feedback */
+    .item-dragging {
+        opacity: 0.9;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3) !important;
+        will-change: transform;
+        transition: none !important;
+    }
+
+    /* Keep outline visible during drag/resize/rotate */
+    .item-dragging.item-active,
+    .item-resizing.item-active {
+        border: 3px solid #4f46e5 !important;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.3), 0 10px 30px rgba(0, 0, 0, 0.3) !important;
+    }
+
+    .item-resizing {
+        will-change: transform;
+        transition: none !important;
+    }
+
+    /* Canvas item optimizations */
+    .canvas-item {
+        will-change: auto;
+        /* Prevent accidental text selection during drag */
+        user-select: none;
+    }
+
+    .canvas-item.interacting {
+        will-change: transform;
+    }
+
+    /* Improved item-active styling */
+    .item-active {
+        border: 3px solid #4f46e5 !important;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Modal animation */
+    @keyframes modal-in {
+        from {
+            opacity: 0;
+            transform: scale(0.95) translateY(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+        }
+    }
+
+    .animate-modal-in {
+        animation: modal-in 0.3s ease-out forwards;
+    }
+</style>
+
+<button id="nw-canvas-trg" style="
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  padding: 14px 28px;
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+  transition: all 0.2s;
+">
+    🎨 Design erstellen
+</button>
+
+<div id="nw-canvas" style="display:none"
+    class="fixed top-0 z-[999999999] left-0 bg-slate-100 text-slate-800 h-screen overflow-hidden w-[100%]">
+
+    <div class="flex h-full flex-col md:flex-row">
+        <!-- SIDEBAR -->
+        <div class="w-3/12 bg-white shadow-xl z-20 flex flex-col p-6 overflow-y-auto border-r border-slate-200">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                    <i data-lucide="ruler" class="text-blue-600"></i>
+                    Konfigurator
+                </h1>
+                <button id="reset-all" title="Alles zurücksetzen" class="text-slate-400 hover:text-red-500 transition">
+                    <i data-lucide="trash-2"></i>
+                </button>
+            </div>
+
+            <!-- Collision Warning -->
+            <div id="collision-warning"
+                class="hidden mb-6 p-3 bg-red-100 border border-red-200 rounded-lg flex items-start gap-3 animate-pulse">
+                <i data-lucide="alert-triangle" class="text-red-600 flex-shrink-0"></i>
+                <div class="text-sm text-red-800 font-medium">
+                    Achtung: Motive überlappen!<br />
+                    <span class="text-xs font-normal">Bitte verschieben Sie die markierten Motive.</span>
+                </div>
+            </div>
+
+            <!-- 1. Format -->
+            <div class="mb-6">
+                <label class="block text-sm font-semibold mb-2 text-slate-500 uppercase tracking-wider">Format</label>
+                <div id="format-options" class="space-y-2">
+                    <!-- Formats injected here -->
+                </div>
+            </div>
+
+            <!-- 2. Einstellung -->
+            <div class="mb-6">
+                <label
+                    class="block text-sm font-semibold mb-2 text-slate-500 uppercase tracking-wider">Druckeinstellung</label>
+                <div class="flex flex-col gap-2 p-3 rounded-lg border border-slate-200 bg-slate-50">
+                    <span class="text-sm text-slate-700 font-medium flex items-center gap-1">
+                        Elemente unter 1 mm drucken?
+                        <i data-lucide="info" class="text-slate-400 cursor-help size-3"></i>
+                    </span>
+                    <div class="flex gap-2 mt-1">
+                        <button id="btn-print-small-yes"
+                            class="flex-1 text-center py-1 text-sm rounded border bg-blue-600 text-white border-blue-600 transition-all">Ja</button>
+                        <button id="btn-print-small-no"
+                            class="flex-1 text-center py-1 text-sm rounded border bg-white text-slate-600 border-slate-200 transition-all">Nein</button>
+                    </div>
+                </div>
+            </div>
+
+            <hr class="my-6 border-slate-200" />
+
+            <!-- 4. Upload & Gallery -->
+            <div id="gallery-container" class="hidden mb-4">
+                <label class="block text-sm font-semibold mb-2 text-slate-500 uppercase tracking-wider">Ihre
+                    Motive</label>
+                <div id="item-gallery" class="flex flex-wrap gap-2"></div>
+            </div>
+
+            <div class="mb-6">
+                <label
+                    class="flex items-center justify-center w-full h-12 px-4 transition bg-white border-2 border-dashed border-blue-400 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer font-medium gap-2 text-sm">
+                    <i data-lucide="upload"></i>
+                    <span id="upload-label">Datei hinzufügen</span>
+                    <input type="file" id="file-input" class="hidden" multiple accept=".png,.jpg,.jpeg,.svg,.webp,.pdf">
+                </label>
+            </div>
+
+            <!-- 5. Active Item Editor -->
+            <div id="item-editor" class="hidden bg-blue-50 p-4 rounded-xl border border-blue-200 shadow-sm mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 id="active-item-name"
+                        class="font-semibold text-blue-900 flex items-center gap-2 truncate max-w-[150px] text-sm italic">
+                        <i data-lucide="settings" class="size-3"></i> <span>Name</span>
+                    </h3>
+                    <div class="flex gap-1">
+                        <button id="btn-rotate" class="text-blue-600 hover:bg-blue-100 p-1.5 rounded-full transition"><i
+                                data-lucide="rotate-cw" class="size-4"></i></button>
+                        <button id="btn-delete"
+                            class="text-red-400 hover:text-red-600 hover:bg-red-100 p-1.5 rounded-full transition"><i
+                                data-lucide="trash-2" class="size-4"></i></button>
+                    </div>
+                </div>
+
+                <div id="editor-warning"
+                    class="hidden mb-3 p-2 bg-red-100 text-red-700 text-[10px] rounded border border-red-200 font-semibold">
+                </div>
+
+                <div
+                    class="mb-4 bg-white p-2 rounded border border-blue-100 flex items-center justify-between shadow-sm">
+                    <div class="flex items-center gap-2 text-blue-800 font-bold text-xs"><i data-lucide="layers"
+                            class="size-4"></i><span>Menge:</span></div>
+                    <input type="number" id="input-qty" min="1"
+                        class="w-16 px-1 py-1 border border-blue-300 rounded text-center font-bold text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                </div>
+
+                <button id="btn-fill-page"
+                    class="w-full mb-4 py-1.5 bg-indigo-100 text-indigo-700 text-[10px] font-bold rounded hover:bg-indigo-200 transition flex items-center justify-center gap-1">
+                    <i data-lucide="grid-3x3" class="size-3"></i> Bogen komplett füllen
+                </button>
+
+                <div class="flex items-center justify-between mb-2 px-1">
+                    <span class="text-[10px] text-slate-500 font-medium">Größe anpassen</span>
+                    <button id="toggle-aspect-lock"
+                        class="flex items-center gap-1 text-[9px] px-2 py-1 rounded border transition-all bg-blue-50 border-blue-300 text-blue-700"
+                        title="Seitenverhältnis umschalten">
+                        <i data-lucide="lock" class="size-3"></i>
+                        <span id="aspect-lock-label">Gesperrt</span>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 mb-2 relative">
+                    <div>
+                        <input type="number" id="input-width" step="0.1"
+                            class="w-full px-2 py-1.5 border border-blue-200 rounded text-xs focus:ring-2 focus:ring-blue-500 outline-none">
+                        <span class="text-[9px] text-slate-400 block text-right mt-0.5">cm Breite</span>
+                    </div>
+                    <div>
+                        <input type="number" id="input-height" step="0.1"
+                            class="w-full px-2 py-1.5 border border-blue-200 rounded text-xs focus:ring-2 focus:ring-blue-500 outline-none">
+                        <span class="text-[9px] text-slate-400 block text-right mt-0.5">cm Höhe</span>
+                    </div>
+                </div>
+
+                <div class="flex justify-end">
+                    <button id="btn-reset-size"
+                        class="flex items-center gap-1 text-[9px] text-slate-500 hover:text-blue-600 bg-white px-2 py-0.5 rounded border border-slate-200 hover:border-blue-300 transition"><i
+                            data-lucide="refresh-ccw" class="size-2"></i> Originalmaß</button>
+                </div>
+            </div>
+
+            <!-- Footer / Checkout -->
+            <div class="mt-auto pt-4 border-t border-slate-200">
+                <div class="flex justify-between items-center mb-3 px-1">
+                    <div class="flex items-center gap-1.5 text-slate-600 text-sm font-medium">
+                        <i data-lucide="package" class="size-4"></i>
+                        <span id="sheet-count-label">0 Bogen konfiguriert</span>
+                    </div>
+                    <div class="text-sm font-bold text-slate-900" id="total-price-label">€0.00</div>
+                </div>
+
+                <div class="flex flex-col gap-2">
+                    <button id="btn-add-sheet"
+                        class="w-full py-2 bg-white border border-slate-300 text-slate-700 shadow-sm rounded-lg hover:bg-slate-50 font-bold text-sm flex items-center justify-center gap-2 transition active:scale-95">
+                        <i data-lucide="plus" class="size-4"></i> Weiteren Bogen hinzufügen
+                    </button>
+                    <button id="btn-checkout"
+                        class="w-full py-2 text-white shadow-lg rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition active:scale-95 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
+                        <i data-lucide="shopping-cart" class="size-4"></i> In den Warenkorb
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- CANVAS AREA -->
+        <div id="viewport" class="flex-1 relative bg-slate-200 flex flex-col overflow-hidden">
+            <!-- Sheet Tabs - Above Canvas -->
+            <div id="sheet-tabs"
+                class="flex-shrink-0 flex items-center gap-2 p-3 bg-white border-b border-slate-200 overflow-x-auto z-20">
+                <!-- Tabs will be dynamically rendered here -->
+            </div>
+
+            <!-- Pan Viewport (Figma-style, no scrollbars) -->
+            <div id="pan-viewport" class="flex-1 relative overflow-hidden cursor-grab" style="background: #e2e8f0;">
+                <!-- Zoom Controls - absolute position -->
+                <div class="absolute top-4 right-4 flex bg-white rounded-lg shadow-md overflow-hidden z-50">
+                    <button id="zoom-out" class="p-2 hover:bg-slate-100 border-r text-slate-600">-</button>
+                    <span id="zoom-label"
+                        class="px-3 py-2 text-sm font-mono text-slate-600 min-w-[60px] text-center flex items-center justify-center">50%</span>
+                    <button id="zoom-in" class="p-2 hover:bg-slate-100 text-slate-600">+</button>
+                </div>
+
+                <!-- Pan Layer - moves via transform: translate -->
+                <div id="pan-layer" class="absolute" style="transform: translate(0px, 0px);">
+                    <!-- Layout Plane -->
+                    <!-- Canvas Wrapper - zooms via scale, origin at top-left for easier math -->
+                    <div id="canvas-wrapper" class="relative" style="transform: scale(0.5); transform-origin: 0 0;">
+
+                        <!-- Dimensions Labels -->
+                        <div
+                            class="absolute -bottom-8 left-0 w-full text-center text-xs font-mono text-slate-500 font-bold">
+                            <span id="dim-w-label">56</span> cm
+                            <div class="h-px bg-slate-400 w-full absolute top-[-5px]"></div>
+                            <div class="h-2 w-px bg-slate-400 absolute left-0 top-[-9px]"></div>
+                            <div class="h-2 w-px bg-slate-400 absolute right-0 top-[-9px]"></div>
+                        </div>
+                        <div class="absolute -right-12 top-0 h-full flex items-center text-xs font-mono text-slate-500 font-bold"
+                            style="writing-mode: vertical-rl;">
+                            <span id="dim-h-label">100</span> cm
+                            <div class="w-px bg-slate-400 h-full absolute left-[-5px]"></div>
+                            <div class="w-2 h-px bg-slate-400 absolute left-[-9px] top-0"></div>
+                            <div class="w-2 h-px bg-slate-400 absolute left-[-9px] bottom-0"></div>
+                        </div>
+
+                        <!-- The Sheet - clips content like Canva -->
+                        <div id="print-sheet"
+                            class="relative shadow-2xl bg-[#C2C5CC] transition-colors overflow-hidden select-none">
+                            <!-- Rulers and grid will be added here -->
+                            <div id="ruler-h"
+                                class="absolute h-6 -top-6 left-0 right-0 border-b border-slate-400/50 bg-white/40 backdrop-blur-sm">
+                            </div>
+                            <div id="ruler-v"
+                                class="absolute w-6 -left-6 top-0 bottom-0 border-r border-slate-400/50 bg-white/40 backdrop-blur-sm">
+                            </div>
+                            <div class="absolute inset-0 pointer-events-none opacity-[0.05]" id="canvas-grid"></div>
+
+                            <div id="items-layer" class="absolute inset-0 overflow-visible"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Order Overview Modal (Premium Design) -->
+        <div id="order-modal" class="hidden fixed inset-0 z-[9999999] flex items-center justify-center p-4"
+            style="backdrop-filter: blur(8px); background: rgba(0,0,0,0.5);">
+            <div id="order-modal-backdrop" class="absolute inset-0"></div>
+            <div class="relative bg-white rounded-3xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col animate-modal-in"
+                style="box-shadow: 0 25px 80px rgba(0,0,0,0.25);">
+                <!-- Header -->
+                <div
+                    class="p-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-slate-50 to-white">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-900 flex items-center gap-3">
+                            <div
+                                class="w-12 h-12 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 flex items-center justify-center shadow-lg">
+                                <i data-lucide="package" class="size-6 text-white"></i>
+                            </div>
+                            Deine Projekte
+                        </h2>
+                        <p class="text-slate-500 mt-1 text-sm">Übersicht aller erstellten Bögen</p>
+                    </div>
+                    <button id="close-order-modal" class="p-3 hover:bg-slate-100 rounded-xl transition group">
+                        <i data-lucide="x" class="size-6 text-slate-400 group-hover:text-slate-600 transition"></i>
+                    </button>
+                </div>
+                <!-- Cards Grid Container -->
+                <div id="order-sheets-container" class="flex-1 overflow-y-auto p-6 bg-slate-50">
+                    <div id="order-cards-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <!-- Project cards will be rendered here -->
+                    </div>
+                </div>
+                <!-- Footer -->
+                <div class="p-6 border-t border-slate-100 bg-white">
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex items-center gap-2">
+                            <span class="text-slate-500">Bestellte Produkte:</span>
+                            <span id="order-product-count" class="text-xl font-bold text-slate-900">0</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-slate-500">Gesamt:</span>
+                            <span id="order-total-price"
+                                class="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-green-600 bg-clip-text text-transparent">€0.00</span>
+                        </div>
+                    </div>
+                    <button id="btn-add-to-cart"
+                        class="w-full py-4 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold text-lg rounded-2xl shadow-lg hover:shadow-xl flex items-center justify-center gap-3 transition-all duration-200 transform hover:scale-[1.02] active:scale-[0.98]">
+                        <i data-lucide="shopping-cart" class="size-6"></i>
+                        In den Warenkorb
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <script>
+
+            $(document).ready(() => {
+
+                const canvas = $('#nw-canvas');
+                $('body').prepend(canvas);
+
+                $("#nw-canvas-trg").on('click', function () {
+                    $('#nw-canvas').fadeIn(200, function () {
+                        // Center canvas after it becomes visible and has dimensions
+                        autoScale();
+                        updateUI();
+                    });
+                })
+
+                /**
+                 * APP STATE & CONSTANTS
+                 */
+                const PX_PER_CM = 37.79;
+                const GAP_CM = 1.0;
+                const FALLBACK_DPI = 300;
+
+                const FORMATS = [
+                    { id: 'custom', name: '56 x 100 cm', width: 56, height: 100, price: 19.90 },
+                    { id: 'a4', name: 'DIN A4 (21 x 29.7 cm)', width: 21.0, height: 29.7, price: 7.90 },
+                    { id: 'a3', name: 'DIN A3 (29.7 x 42 cm)', width: 29.7, height: 42.0, price: 12.50 },
+                ];
+
+                let state = {
+                    selectedFormat: FORMATS[0],
+                    printSmallElements: true,
+                    items: [],
+                    savedSheets: [],
+                    currentSheetIndex: null, // null = new sheet, index = editing a saved sheet
+                    selectedItemId: null,
+                    zoom: 0.5,
+                    // Pan state (Figma-style)
+                    panX: 0,
+                    panY: 0,
+                    isPanning: false,
+                    panStartX: 0,
+                    panStartY: 0,
+                    panStartPanX: 0,
+                    panStartPanY: 0,
+                    // Drag state
+                    isDragging: false,
+                    dragOffset: { x: 0, y: 0 },
+                    collidingIds: [],
+                    // Resize state
+                    isResizing: false,
+                    resizeHandle: null,
+                    resizeStartPos: { x: 0, y: 0 },
+                    resizeStartSize: { w: 0, h: 0 },
+                    resizeStartItemPos: { x: 0, y: 0 },
+                    aspectRatioLocked: true,
+                    manualMode: true,
+                    // Rotation state (no longer used for drag, kept for compatibility)
+                    isRotating: false,
+                    rotateStartAngle: 0,
+                    rotateItemStartAngle: 0,
+                    rotateCenter: { x: 0, y: 0 }
+                };
+
+                /**
+                 * UTILS
+                 */
+                const cmToPx = cm => cm * PX_PER_CM;
+                const pxToCm = px => px / PX_PER_CM;
+                const generateId = (prefix = 'item') => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+                // Image compression to reduce memory usage - compresses large images
+                const compressImage = (file, maxWidth = 2000, quality = 0.8) => {
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            const img = new Image();
+                            img.onload = () => {
+                                // If image is small enough, use original
+                                if (img.naturalWidth <= maxWidth && file.size < 500000) {
+                                    resolve({ dataUrl: e.target.result, width: img.naturalWidth, height: img.naturalHeight });
+                                    return;
+                                }
+
+                                // Calculate new dimensions
+                                let width = img.naturalWidth;
+                                let height = img.naturalHeight;
+                                if (width > maxWidth) {
+                                    height = (height * maxWidth) / width;
+                                    width = maxWidth;
+                                }
+
+                                // Use OffscreenCanvas if available for better performance
+                                const canvas = document.createElement('canvas');
+                                canvas.width = width;
+                                canvas.height = height;
+                                const ctx = canvas.getContext('2d');
+                                ctx.imageSmoothingEnabled = true;
+                                ctx.imageSmoothingQuality = 'high';
+                                ctx.drawImage(img, 0, 0, width, height);
+
+                                // Compress to JPEG for better file size (except PNG with transparency)
+                                const isPNG = file.type === 'image/png';
+                                const outputType = isPNG ? 'image/png' : 'image/jpeg';
+                                const dataUrl = canvas.toDataURL(outputType, isPNG ? 1 : quality);
+
+                                resolve({ dataUrl, width: img.naturalWidth, height: img.naturalHeight });
+                            };
+                            img.onerror = () => resolve({ dataUrl: e.target.result, width: 100, height: 100 });
+                            img.src = e.target.result;
+                        };
+                        reader.onerror = () => resolve(null);
+                        reader.readAsDataURL(file);
+                    });
+                };
+
+                const detectImageDPI = (file) => {
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.readAsArrayBuffer(file.slice(0, 50000));
+                        reader.onload = (e) => {
+                            const view = new DataView(e.target.result);
+                            try {
+                                if (view.getUint32(0) === 0x89504E47 && view.getUint32(4) === 0x0D0A1A0A) {
+                                    let offset = 8;
+                                    while (offset < view.byteLength) {
+                                        const length = view.getUint32(offset);
+                                        const type = view.getUint32(offset + 4);
+                                        if (type === 0x70485973) {
+                                            const ppuX = view.getUint32(offset + 8);
+                                            const unit = view.getUint8(offset + 16);
+                                            if (unit === 1) { resolve(Math.round(ppuX * 0.0254)); return; }
+                                        }
+                                        offset += 12 + length;
+                                    }
+                                }
+                                if (view.getUint16(0) === 0xFFD8) {
+                                    let offset = 2;
+                                    while (offset < view.byteLength) {
+                                        const marker = view.getUint16(offset);
+                                        const length = view.getUint16(offset + 2);
+                                        if (marker === 0xFFE0) {
+                                            if (view.getUint32(offset + 4) === 0x4A464946) {
+                                                const units = view.getUint8(offset + 11);
+                                                const xDensity = view.getUint16(offset + 12);
+                                                if (units === 1) { resolve(xDensity); return; }
+                                                else if (units === 2) { resolve(Math.round(xDensity * 2.54)); return; }
+                                            }
+                                        }
+                                        offset += 2 + length;
+                                    }
+                                }
+                            } catch (err) { }
+                            resolve(null);
+                        };
+                        reader.onerror = () => resolve(null);
+                    });
+                };
+
+                // Get effective bounding box size for any rotation angle
+                const getEffectiveSize = (item) => {
+                    const rotation = item.rotation || 0;
+                    const radians = (rotation * Math.PI) / 180;
+                    const cos = Math.abs(Math.cos(radians));
+                    const sin = Math.abs(Math.sin(radians));
+                    return {
+                        width: item.width * cos + item.height * sin,
+                        height: item.width * sin + item.height * cos
+                    };
+                };
+
+                // Generate resize handles + rotation handle HTML
+                const createResizeHandles = () => {
+                    const handles = ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'];
+                    let html = handles.map(h => `<div class="item-handle handle-${h}" data-handle="${h}"></div>`).join('');
+                    // Add rotation connector line and handle
+                    html += `<div class="rotate-connector"></div>`;
+                    html += `<div class="item-handle handle-rotate" data-handle="rotate"></div>`;
+                    return html;
+                };
+
+                // Rotate item by 90° clockwise on click (predefined angles: 0°, 90°, 180°, 270°)
+                const rotateBy90 = (item, e) => {
+                    e.stopPropagation();
+                    state.selectedItemId = item.id;
+                    const currentRotation = item.rotation || 0;
+                    // Rotate 90° clockwise, wrap at 360°
+                    const newRotation = (currentRotation + 90) % 360;
+                    state.items = state.items.map(i => i.id === item.id ? { ...i, rotation: newRotation } : i);
+                    updateUI();
+                };
+
+                // Constrain item within canvas boundaries (properly handles rotation)
+                const constrainToBounds = (item, newX, newY, newW, newH) => {
+                    const { width: formatW, height: formatH } = state.selectedFormat;
+
+                    // Calculate rotated bounding box dimensions
+                    const rotation = item.rotation || 0;
+                    const radians = (rotation * Math.PI) / 180;
+                    const cos = Math.abs(Math.cos(radians));
+                    const sin = Math.abs(Math.sin(radians));
+
+                    // Actual bounding box of rotated rectangle
+                    const boundingW = newW * cos + newH * sin;
+                    const boundingH = newW * sin + newH * cos;
+
+                    // Offset from item position to bounding box top-left
+                    const offsetX = (boundingW - newW) / 2;
+                    const offsetY = (boundingH - newH) / 2;
+
+                    // Constrain position so rotated bounding box stays within canvas
+                    let constrainedX = newX;
+                    let constrainedY = newY;
+
+                    // Left edge: item.x - offsetX >= 0
+                    if (newX - offsetX < 0) constrainedX = offsetX;
+                    // Top edge: item.y - offsetY >= 0
+                    if (newY - offsetY < 0) constrainedY = offsetY;
+                    // Right edge: item.x + newW + offsetX <= formatW
+                    if (newX + newW + offsetX > formatW) constrainedX = formatW - newW - offsetX;
+                    // Bottom edge: item.y + newH + offsetY <= formatH
+                    if (newY + newH + offsetY > formatH) constrainedY = formatH - newH - offsetY;
+
+                    // Clamp to valid range
+                    constrainedX = Math.max(offsetX, Math.min(constrainedX, formatW - newW - offsetX));
+                    constrainedY = Math.max(offsetY, Math.min(constrainedY, formatH - newH - offsetY));
+
+                    // Constrain dimensions if too large
+                    const maxW = formatW - 2 * offsetX;
+                    const maxH = formatH - 2 * offsetY;
+                    const constrainedW = Math.min(newW, maxW);
+                    const constrainedH = Math.min(newH, maxH);
+
+                    return {
+                        x: parseFloat(constrainedX.toFixed(2)),
+                        y: parseFloat(constrainedY.toFixed(2)),
+                        width: parseFloat(Math.max(0.5, constrainedW).toFixed(2)),
+                        height: parseFloat(Math.max(0.5, constrainedH).toFixed(2))
+                    };
+                };
+
+                // Throttled update via requestAnimationFrame
+                const throttledUpdate = (() => {
+                    let pending = false;
+                    return (callback) => {
+                        if (!pending) {
+                            pending = true;
+                            requestAnimationFrame(() => { callback(); pending = false; });
+                        }
+                    };
+                })();
+
+                // Calculate new dimensions during resize based on handle
+                // Corner handles: respect aspect ratio lock
+                // Edge handles: ALWAYS single-direction only (like Canva), ignore aspect lock
+                const calculateResize = (item, handle, deltaX, deltaY, aspectLocked) => {
+                    let newW = item.width, newH = item.height, newX = item.x, newY = item.y;
+                    const ratio = item.aspectRatio || (item.width / item.height);
+
+                    switch (handle) {
+                        // Corner handles - respect aspect ratio lock
+                        case 'se':
+                            newW = item.width + deltaX;
+                            newH = aspectLocked ? newW / ratio : item.height + deltaY;
+                            break;
+                        case 'sw':
+                            newW = item.width - deltaX;
+                            newH = aspectLocked ? newW / ratio : item.height + deltaY;
+                            newX = item.x + deltaX;
+                            break;
+                        case 'ne':
+                            newW = item.width + deltaX;
+                            if (aspectLocked) {
+                                newH = newW / ratio;
+                                newY = item.y - (newH - item.height);
+                            } else {
+                                newH = item.height - deltaY;
+                                newY = item.y + deltaY;
+                            }
+                            break;
+                        case 'nw':
+                            newW = item.width - deltaX;
+                            if (aspectLocked) {
+                                newH = newW / ratio;
+                                newY = item.y - (newH - item.height);
+                            } else {
+                                newH = item.height - deltaY;
+                                newY = item.y + deltaY;
+                            }
+                            newX = item.x + deltaX;
+                            break;
+
+                        // Edge handles - SINGLE DIRECTION ONLY (ignores aspect lock)
+                        case 'e':
+                            newW = item.width + deltaX;
+                            // Do NOT change height - right edge only
+                            break;
+                        case 'w':
+                            newW = item.width - deltaX;
+                            newX = item.x + deltaX;
+                            // Do NOT change height - left edge only
+                            break;
+                        case 's':
+                            newH = item.height + deltaY;
+                            // Do NOT change width - bottom edge only
+                            break;
+                        case 'n':
+                            newH = item.height - deltaY;
+                            newY = item.y + deltaY;
+                            // Do NOT change width - top edge only
+                            break;
+                    }
+                    return { x: newX, y: newY, width: Math.max(0.5, newW), height: Math.max(0.5, newH) };
+                };
+
+                // Start resizing with a specific handle
+                const startResize = (item, handle, e) => {
+                    e.stopPropagation();
+                    state.selectedItemId = item.id;
+                    state.isResizing = true;
+                    state.resizeHandle = handle;
+                    const rect = $('#print-sheet')[0].getBoundingClientRect();
+                    state.resizeStartPos = { x: (e.clientX - rect.left) / state.zoom, y: (e.clientY - rect.top) / state.zoom };
+                    state.resizeStartSize = { w: item.width, h: item.height };
+                    state.resizeStartItemPos = { x: item.x, y: item.y };
+                    $(`[data-item-id="${item.id}"]`).addClass('item-resizing');
+                };
+
+                /**
+                 * LAYOUT ALGORITHM
+                 */
+                const MAX_ITEMS = 200; // Limit to prevent memory issues
+
+                const calculateLayout = (itemList, formatW, formatH) => {
+                    const groups = {};
+                    itemList.forEach(item => {
+                        const key = item.groupId || item.id;
+                        if (!groups[key]) groups[key] = { ...item };
+                        else groups[key].quantity = Math.max(groups[key].quantity || 1, item.quantity || 1);
+                    });
+
+                    let itemsToPlace = [];
+                    let totalCount = 0;
+                    Object.values(groups).forEach(master => {
+                        const count = Math.max(1, master.quantity || 1);
+                        const itemsToAdd = Math.min(count, MAX_ITEMS - totalCount);
+                        const eff = getEffectiveSize(master);
+                        for (let i = 0; i < itemsToAdd; i++) {
+                            itemsToPlace.push({ ...master, id: null, x: 0, y: 0, rawW: eff.width, rawH: eff.height });
+                        }
+                        totalCount += itemsToAdd;
+                        if (totalCount >= MAX_ITEMS) return;
+                    });
+
+                    itemsToPlace.sort((a, b) => Math.max(b.rawW, b.rawH) - Math.max(a.rawW, a.rawH));
+
+                    let shelves = [];
+                    let currentY = 0;
+                    const placedItems = [];
+                    let overflowCount = 0;
+
+                    itemsToPlace.forEach((item, index) => {
+                        item.id = `layout-${Date.now()}-${index}`;
+                        let bestShelfIndex = -1;
+                        let bestRotation = 0;
+                        let minWaste = Infinity;
+
+                        for (let i = 0; i < shelves.length; i++) {
+                            const shelf = shelves[i];
+                            const remainingW = formatW - shelf.currentX;
+                            if (remainingW >= item.rawW && shelf.height >= item.rawH) {
+                                const waste = shelf.height - item.rawH;
+                                if (waste < minWaste) { minWaste = waste; bestShelfIndex = i; bestRotation = 0; }
+                            }
+                            if (remainingW >= item.rawH && shelf.height >= item.rawW) {
+                                const waste = shelf.height - item.rawW;
+                                if (waste < minWaste) { minWaste = waste; bestShelfIndex = i; bestRotation = 90; }
+                            }
+                        }
+
+                        if (bestShelfIndex !== -1) {
+                            const shelf = shelves[bestShelfIndex];
+
+                            // Visual dimensions of the packed item
+                            const VW = (bestRotation === 0) ? item.rawW : item.rawH;
+                            const VH = (bestRotation === 0) ? item.rawH : item.rawW;
+
+                            // Calculate centered position logic
+                            // Visual Center = Shelf Current X + VW/2, Shelf Y + VH/2
+                            // Item Pos = Visual Center - Item Width/2, Visual Center - Item Height/2
+                            const cssX = shelf.currentX + VW / 2 - item.width / 2;
+                            const cssY = shelf.y + VH / 2 - item.height / 2;
+
+                            placedItems.push({ ...item, x: parseFloat(cssX.toFixed(2)), y: parseFloat(cssY.toFixed(2)), rotation: (item.rotation || 0) + bestRotation });
+                            shelf.currentX += VW + GAP_CM;
+                        } else {
+                            // Logic to determine new shelf size/orientation
+                            // Prefer keeping current orientation
+                            let nW, nH, rot;
+
+                            if (item.rawW <= formatW) {
+                                nW = item.rawW; nH = item.rawH; rot = 0;
+                            } else if (item.rawH <= formatW) {
+                                nW = item.rawH; nH = item.rawW; rot = 90;
+                            } else {
+                                overflowCount++; return;
+                            }
+
+                            if (currentY + nH <= formatH) {
+                                const VW = nW;
+                                const VH = nH;
+
+                                const cssX = 0 + VW / 2 - item.width / 2;
+                                const cssY = currentY + VH / 2 - item.height / 2;
+
+                                placedItems.push({ ...item, x: parseFloat(cssX.toFixed(2)), y: parseFloat(cssY.toFixed(2)), rotation: (item.rotation || 0) + rot });
+                                shelves.push({ y: currentY, height: nH, currentX: nW + GAP_CM });
+                                currentY += nH + GAP_CM;
+                            } else {
+                                overflowCount++;
+                            }
+                        }
+                    });
+
+                    if (overflowCount > 0) {
+                        const placedCounts = {};
+                        placedItems.forEach(i => placedCounts[i.groupId] = (placedCounts[i.groupId] || 0) + 1);
+                        placedItems.forEach(i => { if (placedCounts[i.groupId]) i.quantity = placedCounts[i.groupId]; });
+                    }
+                    return { placedItems, overflowCount };
+                };
+
+                /**
+                 * RENDERING LOGIC
+                 */
+                const renderRulers = () => {
+                    const $rh = $('#ruler-h').empty();
+                    const $rv = $('#ruler-v').empty();
+
+                    // Horizontal
+                    for (let i = 0; i <= state.selectedFormat.width; i++) {
+                        if (i % 5 === 0) {
+                            $rh.append(`<div class="absolute flex flex-col items-center text-[9px] text-slate-500 font-mono" style="left: ${cmToPx(i)}px; top: -24px; width: 1px;"><span class="mb-0.5">${i}</span><div class="bg-slate-400 h-2 w-px"></div></div>`);
+                        } else {
+                            $rh.append(`<div class="absolute bg-slate-300" style="left: ${cmToPx(i)}px; bottom: 0; height: 5px; width: 1px;"></div>`);
+                        }
+                    }
+                    // Vertical
+                    for (let i = 0; i <= state.selectedFormat.height; i++) {
+                        if (i % 5 === 0) {
+                            $rv.append(`<div class="absolute flex items-center justify-end text-[9px] text-slate-500 font-mono" style="top: ${cmToPx(i)}px; left: -24px; height: 1px;"><span class="mr-0.5">${i}</span><div class="bg-slate-400 w-2 h-px"></div></div>`);
+                        } else {
+                            $rv.append(`<div class="absolute bg-slate-300" style="top: ${cmToPx(i)}px; right: 0; width: 5px; height: 1px;"></div>`);
+                        }
+                    }
+
+                    $('#canvas-grid').css('background-image', `linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px)`)
+                        .css('background-size', `${cmToPx(1)}px ${cmToPx(1)}px`);
+                };
+
+                // Render sheet tabs for switching between sheets
+                const renderSheetTabs = () => {
+                    const $tabs = $('#sheet-tabs').empty();
+
+                    // Add tabs for saved sheets
+                    state.savedSheets.forEach((sheet, index) => {
+                        const isActive = state.currentSheetIndex === index;
+                        const itemCount = sheet.items.length;
+                        const $tab = $(`
+                        <div class="sheet-tab flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}" data-sheet-index="${index}">
+                            <i data-lucide="file" class="size-4"></i>
+                            <span class="font-medium text-sm">Bogen ${index + 1}</span>
+                            <span class="text-xs ${isActive ? 'text-blue-200' : 'text-slate-400'}">(${itemCount})</span>
+                            <button class="sheet-delete-btn ml-1 p-0.5 rounded hover:bg-red-500 hover:text-white transition" data-delete-index="${index}">
+                                <i data-lucide="x" class="size-3"></i>
+                            </button>
+                        </div>
+                    `);
+                        $tab.on('click', (e) => {
+                            if ($(e.target).closest('.sheet-delete-btn').length) {
+                                e.stopPropagation();
+                                // Delete this sheet
+                                state.savedSheets.splice(index, 1);
+                                if (state.currentSheetIndex === index) {
+                                    // Switch to new sheet
+                                    state.currentSheetIndex = null;
+                                    state.items = [];
+                                } else if (state.currentSheetIndex > index) {
+                                    state.currentSheetIndex--;
+                                }
+                                updateUI();
+                                return;
+                            }
+                            // Switch to this sheet
+                            switchToSheet(index);
+                        });
+                        $tabs.append($tab);
+                    });
+
+                    // Add "New Sheet" tab
+                    const isNewSheet = state.currentSheetIndex === null;
+                    const $newTab = $(`
+                    <div class="sheet-tab flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-all ${isNewSheet ? 'bg-green-600 text-white shadow-md' : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-2 border-dashed border-slate-300'}">
+                        <i data-lucide="${isNewSheet ? 'edit-3' : 'plus'}" class="size-4"></i>
+                        <span class="font-medium text-sm">${isNewSheet ? 'Aktueller Bogen' : 'Neuer Bogen'}</span>
+                        ${isNewSheet && state.items.length > 0 ? `<span class="text-xs text-green-200">(${state.items.length})</span>` : ''}
+                    </div>
+                `).on('click', () => {
+                        if (state.currentSheetIndex !== null) {
+                            // Create new sheet
+                            state.currentSheetIndex = null;
+                            state.items = [];
+                            state.selectedItemId = null;
+                            updateUI();
+                        }
+                    });
+                    $tabs.append($newTab);
+
+                    // Add spacer to push BESTELLEN button to right
+                    $tabs.append($('<div class="flex-1"></div>'));
+
+                    // Add BESTELLEN button (Order button) - right side
+                    const $orderBtn = $(`
+                        <button id="bestellen-btn" class="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105">
+                            <i data-lucide="shopping-bag" class="size-5"></i>
+                            <span>BESTELLEN</span>
+                        </button>
+                    `).on('click', () => openOrderModal());
+                    $tabs.append($orderBtn);
+
+                    // Add Close button (X) - to close canvas
+                    const $closeBtn = $(`
+                        <button id="close-canvas-btn" class="flex items-center justify-center w-10 h-10 ml-3 bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-xl transition-all duration-200" title="Schließen">
+                            <i data-lucide="x" class="size-6"></i>
+                        </button>
+                    `).on('click', () => {
+                        $('#nw-canvas').fadeOut(200);
+                    });
+                    $tabs.append($closeBtn);
+
+                    lucide.createIcons();
+                };
+
+                // Switch to a saved sheet for editing
+                const switchToSheet = (index) => {
+                    // Save current items to current sheet if editing one
+                    if (state.currentSheetIndex !== null && state.items.length > 0) {
+                        state.savedSheets[state.currentSheetIndex].items = [...state.items];
+                    } else if (state.currentSheetIndex === null && state.items.length > 0) {
+                        // Save current "new" sheet
+                        state.savedSheets.push({
+                            id: Date.now(),
+                            format: state.selectedFormat,
+                            items: [...state.items],
+                            price: state.selectedFormat.price
+                        });
+                    }
+
+                    // Switch to requested sheet
+                    state.currentSheetIndex = index;
+                    const sheet = state.savedSheets[index];
+                    state.items = [...sheet.items];
+                    state.selectedFormat = sheet.format;
+                    state.selectedItemId = null;
+                    updateUI();
+                };
+
+                // Open the Order Modal with all projects
+                const openOrderModal = () => {
+                    // First save current sheet if it has items
+                    if (state.currentSheetIndex !== null && state.items.length > 0) {
+                        state.savedSheets[state.currentSheetIndex].items = [...state.items];
+                        state.savedSheets[state.currentSheetIndex].format = state.selectedFormat;
+                    } else if (state.currentSheetIndex === null && state.items.length > 0) {
+                        state.savedSheets.push({
+                            id: Date.now(),
+                            format: state.selectedFormat,
+                            items: [...state.items],
+                            price: state.selectedFormat.price
+                        });
+                        state.currentSheetIndex = state.savedSheets.length - 1;
+                    }
+
+                    const $grid = $('#order-cards-grid').empty();
+                    let totalPrice = 0;
+                    let totalProducts = 0;
+
+                    // Render each saved sheet as a card
+                    state.savedSheets.forEach((sheet, index) => {
+                        totalProducts++;
+                        totalPrice += sheet.price || sheet.format.price;
+
+                        // Calculate preview dimensions (fit within card while maintaining aspect ratio)
+                        const sheetW = sheet.format.width;
+                        const sheetH = sheet.format.height;
+                        const previewMaxW = 280;
+                        const previewMaxH = 180;
+                        const scale = Math.min(previewMaxW / cmToPx(sheetW), previewMaxH / cmToPx(sheetH));
+                        const previewW = cmToPx(sheetW) * scale;
+                        const previewH = cmToPx(sheetH) * scale;
+
+                        // Generate positioned items for preview
+                        const previewItemsHtml = sheet.items.map(item => {
+                            const itemW = cmToPx(item.width) * scale;
+                            const itemH = cmToPx(item.height) * scale;
+                            const itemX = cmToPx(item.x) * scale;
+                            const itemY = cmToPx(item.y) * scale;
+                            const rotation = item.rotation || 0;
+                            return `<img src="${item.src}" style="position: absolute; left: ${itemX}px; top: ${itemY}px; width: ${itemW}px; height: ${itemH}px; transform: rotate(${rotation}deg); transform-origin: center; object-fit: contain; pointer-events: none;" />`;
+                        }).join('');
+
+                        const $card = $(`
+                            <div class="bg-white rounded-2xl transition-all duration-300 overflow-hidden border border-slate-100 group">
+                                <div class="relative h-56 flex items-center justify-center p-4">
+                                    <div class="relative overflow-hidden" style="width: ${previewW}px; height: ${previewH}px; background: #ffffff;">
+                                        ${previewItemsHtml || '<div class="absolute inset-0 flex items-center justify-center text-slate-400 text-xs">Leer</div>'}
+                                    </div>
+                                    <div class="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-slate-600">
+                                        Bogen ${index + 1}
+                                    </div>
+                                </div>
+                                <!-- Quantity & Info Area -->
+                                <div class="p-4">
+                                    <!-- Quantity Selector Row -->
+                                    <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" value="1" min="1" class="sheet-qty w-12 text-center border border-slate-200 rounded-lg py-1 text-sm font-semibold" data-index="${index}" />
+                                            <span class="text-slate-500 text-sm">St</span>
+                                        </div>
+                                        <div class="flex items-center gap-1">
+                                            <button class="qty-minus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
+                                                <i data-lucide="minus" class="size-4 text-slate-600"></i>
+                                            </button>
+                                            <button class="qty-plus p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition" data-index="${index}">
+                                                <i data-lucide="plus" class="size-4 text-slate-600"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Product Info -->
+                                    <div class="space-y-1 text-xs text-slate-500 mb-3">
+                                        <div class="flex gap-1">
+                                            <span>Produktbreite:</span>
+                                            <span class="text-blue-600 font-medium">${sheet.format.width} Zentimeter</span>
+                                        </div>
+                                        <div class="flex gap-1">
+                                            <span>Produkthöhe:</span>
+                                            <span class="text-blue-600 font-medium">${sheet.format.height} Zentimeter</span>
+                                        </div>
+                                        <div class="flex gap-1">
+                                            <span>Elemente unter 1 mm mit drucken?</span>
+                                            <span class="text-blue-600 font-medium">Ja</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Change Size Link -->
+                                    <button class="text-xs text-slate-400 hover:text-blue-600 transition mb-4 block">
+                                        Größe dieses Blattes ändern
+                                    </button>
+                                    
+                                    <!-- Action Buttons -->
+                                    <div class="flex items-center gap-2">
+                                        <button class="edit-sheet-btn flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition flex items-center justify-center gap-1" data-index="${index}">
+                                            Projekt<br/>bearbeiten
+                                        </button>
+                                        <button class="delete-sheet-btn p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
+                                            <i data-lucide="trash-2" class="size-4"></i>
+                                            <span class="text-xs">Löschen</span>
+                                        </button>
+                                        <button class="duplicate-sheet-btn p-2 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition flex items-center gap-1" data-index="${index}">
+                                            <i data-lucide="copy" class="size-4"></i>
+                                            <span class="text-xs">Duplizieren</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `);
+
+                        $card.find('.edit-sheet-btn').on('click', () => {
+                            $('#order-modal').addClass('hidden');
+                            switchToSheet(index);
+                        });
+
+                        // Delete sheet handler
+                        $card.find('.delete-sheet-btn').on('click', () => {
+                            state.savedSheets.splice(index, 1);
+                            if (state.currentSheetIndex === index) {
+                                state.currentSheetIndex = null;
+                                state.items = [];
+                            } else if (state.currentSheetIndex > index) {
+                                state.currentSheetIndex--;
+                            }
+                            openOrderModal(); // Refresh modal
+                            updateUI();
+                        });
+
+                        // Duplicate sheet handler
+                        $card.find('.duplicate-sheet-btn').on('click', () => {
+                            const duplicate = {
+                                id: Date.now(),
+                                format: { ...sheet.format },
+                                items: sheet.items.map(i => ({ ...i, id: Date.now() + Math.random() })),
+                                price: sheet.price || sheet.format.price
+                            };
+                            state.savedSheets.push(duplicate);
+                            openOrderModal(); // Refresh modal
+                            updateUI();
+                        });
+
+                        // Quantity +/- handlers
+                        $card.find('.qty-plus').on('click', () => {
+                            const $input = $card.find('.sheet-qty');
+                            $input.val(parseInt($input.val()) + 1);
+                        });
+
+                        $card.find('.qty-minus').on('click', () => {
+                            const $input = $card.find('.sheet-qty');
+                            const val = parseInt($input.val());
+                            if (val > 1) $input.val(val - 1);
+                        });
+
+                        $grid.append($card);
+                    });
+
+                    // Add "New Project" card
+                    const $newCard = $(`
+                        <div class="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border-2 border-dashed border-slate-300 hover:border-blue-400 group cursor-pointer flex flex-col items-center justify-center min-h-[300px]">
+                            <div class="w-16 h-16 rounded-full bg-blue-100 group-hover:bg-blue-200 flex items-center justify-center mb-4 transition">
+                                <i data-lucide="plus" class="size-8 text-blue-600"></i>
+                            </div>
+                            <span class="font-semibold text-slate-600 group-hover:text-blue-600 transition">Neues Projekt hinzufügen</span>
+                        </div>
+                    `).on('click', () => {
+                        $('#order-modal').addClass('hidden');
+                        state.currentSheetIndex = null;
+                        state.items = [];
+                        state.selectedItemId = null;
+                        updateUI();
+                    });
+                    $grid.append($newCard);
+
+                    // Update footer totals
+                    $('#order-product-count').text(totalProducts);
+                    $('#order-total-price').text(`€${totalPrice.toFixed(2)}`);
+
+                    // Show modal
+                    $('#order-modal').removeClass('hidden');
+                    lucide.createIcons();
+                };
+
+                // Close order modal handlers
+                $(document).on('click', '#close-order-modal, #order-modal-backdrop', () => {
+                    $('#order-modal').addClass('hidden');
+                });
+
+                $(document).on('keydown', (e) => {
+                    if (e.key === 'Escape' && !$('#order-modal').hasClass('hidden')) {
+                        $('#order-modal').addClass('hidden');
+                    }
+                });
+
+                // Auto-scale to fit artboard in viewport with padding
+                const autoScale = () => {
+                    const $viewport = $('#pan-viewport');
+                    if (!$viewport.length) return;
+                    const viewportW = $viewport.width();
+                    const viewportH = $viewport.height();
+                    const sheetW = cmToPx(state.selectedFormat.width);
+                    const sheetH = cmToPx(state.selectedFormat.height);
+                    const padding = 100; // pixels of padding around the sheet
+                    // Calculate zoom to fit
+                    const scaleX = (viewportW - padding * 2) / sheetW;
+                    const scaleY = (viewportH - padding * 2) / sheetH;
+                    state.zoom = Math.min(scaleX, scaleY, 1); // Don't zoom above 100%
+                    state.zoom = Math.max(0.1, Math.min(5, state.zoom)); // Clamp to valid range
+                    centerCanvas();
+                };
+
+                // Center canvas within viewport (Figma-style)
+                const centerCanvas = () => {
+                    const $viewport = $('#pan-viewport');
+                    if (!$viewport.length) return;
+                    const viewportW = $viewport.width();
+                    const viewportH = $viewport.height();
+                    const sheetW = cmToPx(state.selectedFormat.width) * state.zoom;
+                    const sheetH = cmToPx(state.selectedFormat.height) * state.zoom;
+                    // Center the canvas in the viewport
+                    state.panX = (viewportW - sheetW) / 2;
+                    state.panY = (viewportH - sheetH) / 2;
+                };
+
+                const updateUI = () => {
+                    // Render sheet tabs
+                    renderSheetTabs();
+
+                    // Apply pan and zoom transforms
+                    $('#pan-layer').css('transform', `translate(${state.panX}px, ${state.panY}px)`);
+                    $('#canvas-wrapper').css('transform', `scale(${state.zoom})`);
+
+                    // Labels
+                    $('#dim-w-label').text(state.selectedFormat.width);
+                    $('#dim-h-label').text(state.selectedFormat.height);
+                    $('#zoom-label').text(`${Math.round(state.zoom * 100)}%`);
+                    $('#print-sheet').css({ width: cmToPx(state.selectedFormat.width), height: cmToPx(state.selectedFormat.height) });
+
+                    // Format buttons
+                    $('#format-options').empty();
+                    FORMATS.forEach(f => {
+                        const isActive = f.id === state.selectedFormat.id;
+                        const $btn = $(`
+            <button class="w-full text-left px-4 py-3 rounded-lg border transition-all flex justify-between items-center ${isActive ? 'border-blue-600 bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-600' : 'bg-[#C2C5CC] border-gray-200 text-slate-700 hover:border-blue-300 hover:brightness-95'}">
+                <span>${f.name}</span>
+                ${isActive ? '<div class="w-2 h-2 rounded-full bg-blue-600"></div>' : ''}
+            </button>
+        `).on('click', () => { state.selectedFormat = f; autoScale(); updateUI(); });
+                        $('#format-options').append($btn);
+                    });
+
+                    // Gallery
+                    const uniqueUploads = state.items.reduce((acc, current) => {
+                        if (!acc.find(i => i.groupId === current.groupId)) acc.push(current);
+                        return acc;
+                    }, []);
+
+                    if (uniqueUploads.length > 0) {
+                        $('#gallery-container').removeClass('hidden');
+                        $('#upload-label').text('Weitere Datei hinzufügen');
+                        $('#item-gallery').empty();
+                        uniqueUploads.forEach(u => {
+                            const isActive = state.items.find(i => i.id === state.selectedItemId)?.groupId === u.groupId;
+                            const $thumb = $(`
+                <div class="w-12 h-12 rounded border cursor-pointer overflow-hidden relative ${isActive ? 'border-blue-600 ring-1 ring-blue-600' : 'border-slate-200 hover:border-blue-300'}">
+                    ${u.isPreviewable ? `<img src="${u.src}" class="w-full h-full object-cover">` : `<div class="w-full h-full bg-slate-100 flex items-center justify-center"><i data-lucide="file-text" class="size-4 text-slate-400"></i></div>`}
+                    <div class="absolute bottom-0 right-0 bg-slate-800 text-white text-[8px] px-1 font-bold">${u.quantity}</div>
+                </div>
+            `).on('click', () => {
+                                const found = state.items.find(i => i.groupId === u.groupId);
+                                if (found) { state.selectedItemId = found.id; updateUI(); }
+                            });
+                            $('#item-gallery').append($thumb);
+                        });
+                    } else {
+                        $('#gallery-container').addClass('hidden');
+                        $('#upload-label').text('Datei hinzufügen');
+                    }
+
+                    // Editor
+                    const activeItem = state.items.find(i => i.id === state.selectedItemId);
+                    if (activeItem) {
+                        $('#item-editor').removeClass('hidden');
+                        $('#active-item-name span').text(activeItem.name);
+                        $('#input-qty').val(activeItem.quantity);
+                        $('#input-width').val(activeItem.width.toFixed(2));
+                        $('#input-height').val(activeItem.height.toFixed(2));
+                        $('#btn-fill-page').toggle(uniqueUploads.length === 1);
+                        // Update aspect lock button
+                        const $lockBtn = $('#toggle-aspect-lock');
+                        if (state.aspectRatioLocked) {
+                            $lockBtn.html('<i data-lucide="lock" class="size-3"></i><span id="aspect-lock-label">Gesperrt</span>')
+                                .removeClass('bg-slate-50 border-slate-300 text-slate-600')
+                                .addClass('bg-blue-50 border-blue-300 text-blue-700');
+                        } else {
+                            $lockBtn.html('<i data-lucide="unlock" class="size-3"></i><span id="aspect-lock-label">Frei</span>')
+                                .removeClass('bg-blue-50 border-blue-300 text-blue-700')
+                                .addClass('bg-slate-50 border-slate-300 text-slate-600');
+                        }
+                    } else {
+                        $('#item-editor').addClass('hidden');
+                    }
+
+                    // Collisions
+                    const ids = new Set();
+                    const rects = state.items.map(item => {
+                        const isRotated = item.rotation % 180 !== 0;
+                        let x = item.x, y = item.y, w = item.width, h = item.height;
+                        if (isRotated) {
+                            x = item.x + (item.width - item.height) / 2;
+                            y = item.y + (item.height - item.width) / 2;
+                            w = item.height; h = item.width;
+                        }
+                        return { id: item.id, x, y, w, h };
+                    });
+                    for (let i = 0; i < rects.length; i++) {
+                        for (let j = i + 1; j < rects.length; j++) {
+                            const r1 = rects[i], r2 = rects[j];
+                            const overlap = !(r2.x >= r1.x + r1.w - 0.01 || r2.x + r2.w <= r1.x + 0.01 || r2.y >= r1.y + r1.h - 0.01 || r2.y + r2.h <= r1.y + 0.01);
+                            if (overlap) { ids.add(r1.id); ids.add(r2.id); }
+                        }
+                    }
+                    state.collidingIds = Array.from(ids);
+                    $('#collision-warning').toggle(state.collidingIds.length > 0);
+                    $('#btn-checkout').prop('disabled', state.collidingIds.length > 0);
+
+                    // Canvas Items
+                    $('#items-layer').empty();
+                    state.items.forEach(item => {
+                        const isSelected = item.id === state.selectedItemId;
+                        const isColliding = state.collidingIds.includes(item.id);
+                        const isDragOrResize = (state.isDragging || state.isResizing) && isSelected;
+                        const $el = $(`
+            <div class="canvas-item absolute cursor-move select-none flex items-center justify-center ${isSelected ? 'item-active' : ''} ${isColliding ? 'item-collision' : ''} ${isDragOrResize ? (state.isDragging ? 'item-dragging' : 'item-resizing') : ''}" 
+                 data-item-id="${item.id}"
+                 style="left: ${cmToPx(item.x)}px; top: ${cmToPx(item.y)}px; width: ${cmToPx(item.width)}px; height: ${cmToPx(item.height)}px; transform: rotate(${item.rotation}deg); z-index: ${isSelected ? 10 : 1};">
+                ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-cover pointer-events-none" draggable="false">` : `
+                    <div class="w-full h-full bg-slate-200 border-2 border-slate-300 flex flex-col items-center justify-center p-2 text-center pointer-events-none overflow-hidden">
+                        <i data-lucide="file-text" class="text-slate-400 mb-1"></i>
+                        <span class="text-[10px] text-slate-600 font-mono break-all leading-tight">${item.name}</span>
+                    </div>`}
+                ${isSelected && !isColliding ? `
+                    <div class="absolute -top-7 left-0 bg-indigo-600 text-white text-[11px] font-bold px-2 py-1 rounded shadow whitespace-nowrap z-20" style="transform: rotate(${-item.rotation}deg)">
+                        ${(item.rotation % 180 !== 0 ? item.height : item.width).toFixed(2)} x ${(item.rotation % 180 !== 0 ? item.width : item.height).toFixed(2)} cm
+                    </div>` : ''}
+                ${isColliding ? `<div class="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl-sm"><i data-lucide="alert-triangle" class="size-2"></i></div>` : ''}
+                ${isSelected ? createResizeHandles() : ''}
+                ${isSelected ? `
+                    <button class="auto-fill-btn absolute -bottom-12 left-1/2 transform -translate-x-1/2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 whitespace-nowrap z-30 transition-all hover:scale-105" style="transform: translateX(-50%) rotate(${-item.rotation}deg)">
+                        <i data-lucide="grid-3x3" class="size-3"></i>
+                        Automatisch ausfüllen
+                    </button>` : ''}
+            </div>
+        `).on('mousedown', (e) => {
+                            // Check if clicking on auto-fill button
+                            if ($(e.target).closest('.auto-fill-btn').length) {
+                                e.stopPropagation();
+                                // Trigger fill page logic (same as sidebar button)
+                                const w = item.width, h = item.height;
+                                const sW = state.selectedFormat.width, sH = state.selectedFormat.height;
+                                const calc = (iw, ih) => Math.floor((sW + GAP_CM) / (iw + GAP_CM)) * Math.floor((sH + GAP_CM) / (ih + GAP_CM));
+                                const best = Math.max(calc(w, h), calc(h, w));
+                                if (best === 0) alert("Motiv zu groß!");
+                                else updateQuantity(best);
+                                return;
+                            }
+                            // Check if clicking on handle
+                            if ($(e.target).hasClass('item-handle')) {
+                                const handle = $(e.target).data('handle');
+                                if (handle === 'rotate') {
+                                    rotateBy90(item, e);
+                                } else {
+                                    startResize(item, handle, e);
+                                }
+                                return;
+                            }
+                            // Regular drag
+                            e.stopPropagation();
+                            state.selectedItemId = item.id;
+                            state.isDragging = true;
+                            const rect = $('#print-sheet')[0].getBoundingClientRect();
+                            const mouseX = (e.clientX - rect.left) / state.zoom;
+                            const mouseY = (e.clientY - rect.top) / state.zoom;
+                            state.dragOffset = { x: mouseX - cmToPx(item.x), y: mouseY - cmToPx(item.y) };
+                            $el.addClass('item-dragging');
+                            updateUI();
+                        });
+                        $('#items-layer').append($el);
+                    });
+
+                    // Prices
+                    const currentSheetCount = state.items.length > 0 ? 1 : 0;
+                    const totalSheets = state.savedSheets.length + currentSheetCount;
+                    const totalPrice = (state.savedSheets.reduce((sum, s) => sum + s.price, 0) + (currentSheetCount ? state.selectedFormat.price : 0)).toFixed(2);
+                    $('#sheet-count-label').text(`${totalSheets} Bogen konfiguriert`);
+                    $('#total-price-label').text(`€${totalPrice}`);
+
+                    renderRulers();
+                    lucide.createIcons();
+                };
+
+                /**
+                 * ACTIONS
+                 */
+                const updateQuantity = (val) => {
+                    const qty = parseInt(val, 10);
+                    if (isNaN(qty) || qty < 1) return;
+                    const activeItem = state.items.find(i => i.id === state.selectedItemId);
+                    if (!activeItem) return;
+
+                    const updated = state.items.map(item => item.groupId === activeItem.groupId ? { ...item, quantity: qty } : item);
+                    const { placedItems, overflowCount } = calculateLayout(updated, state.selectedFormat.width, state.selectedFormat.height);
+
+                    if (overflowCount > 0) {
+                        $('#editor-warning').text("Kein Platz mehr auf dem Bogen!").show();
+                    } else {
+                        $('#editor-warning').hide();
+                    }
+
+                    state.items = placedItems;
+                    const newSel = state.items.find(i => i.groupId === activeItem.groupId);
+                    if (newSel) state.selectedItemId = newSel.id;
+                    updateUI();
+                };
+
+                const updateItemSize = (dim, value) => {
+                    const val = parseFloat(value);
+                    if (isNaN(val) || val <= 0) return;
+                    const activeItem = state.items.find(i => i.id === state.selectedItemId);
+                    if (!activeItem) return;
+
+                    let newW, newH;
+                    if (state.aspectRatioLocked) {
+                        newW = dim === 'width' ? val : val * activeItem.aspectRatio;
+                        newH = dim === 'height' ? val : val / activeItem.aspectRatio;
+                    } else {
+                        newW = dim === 'width' ? val : activeItem.width;
+                        newH = dim === 'height' ? val : activeItem.height;
+                    }
+
+                    // Manual mode: directly update with boundary constraints
+                    if (state.manualMode) {
+                        const constrained = constrainToBounds(activeItem, activeItem.x, activeItem.y, newW, newH);
+                        state.items = state.items.map(item => item.id === activeItem.id ? { ...item, ...constrained } : item);
+                        $('#editor-warning').hide();
+                    } else {
+                        const updated = state.items.map(item => item.groupId === activeItem.groupId ? { ...item, width: newW, height: newH } : item);
+                        const { placedItems, overflowCount } = calculateLayout(updated, state.selectedFormat.width, state.selectedFormat.height);
+                        state.items = placedItems;
+                        if (overflowCount > 0) $('#editor-warning').text("Durch Größenänderung passen weniger Motive!").show();
+                        else $('#editor-warning').hide();
+                    }
+
+                    const newSel = state.items.find(i => i.groupId === activeItem.groupId);
+                    if (newSel) state.selectedItemId = newSel.id;
+                    updateUI();
+                };
+
+                /**
+                 * EVENT HANDLERS
+                 */
+                $(() => {
+                    autoScale();
+                    updateUI();
+
+                    $('#zoom-in').on('click', () => { state.zoom = Math.min(2, state.zoom + 0.1); updateUI(); });
+                    $('#zoom-out').on('click', () => { state.zoom = Math.max(0.1, state.zoom - 0.1); updateUI(); });
+
+                    $('#reset-all').on('click', () => {
+                        if (confirm('Alles löschen?')) { state.items = []; state.savedSheets = []; state.selectedItemId = null; updateUI(); }
+                    });
+
+                    $('#btn-print-small-yes').on('click', function () {
+                        state.printSmallElements = true;
+                        $(this).addClass('bg-blue-600 text-white border-blue-600').removeClass('bg-white text-slate-600 border-slate-200');
+                        $('#btn-print-small-no').removeClass('bg-blue-600 text-white border-blue-600').addClass('bg-white text-slate-600 border-slate-200');
+                    });
+
+                    $('#btn-print-small-no').on('click', function () {
+                        state.printSmallElements = false;
+                        $(this).addClass('bg-blue-600 text-white border-blue-600').removeClass('bg-white text-slate-600 border-slate-200');
+                        $('#btn-print-small-yes').removeClass('bg-blue-600 text-white border-blue-600').addClass('bg-white text-slate-600 border-slate-200');
+                    });
+
+                    $('#file-input').on('change', async (e) => {
+                        const files = Array.from(e.target.files);
+                        if (!files.length) return;
+                        const newUploadedItems = [];
+
+                        // Show loading
+                        $('#upload-label').text('Verarbeite...');
+
+                        for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+                            const file = files[fileIndex];
+                            const ext = file.name.split('.').pop().toLowerCase();
+                            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext);
+                            let detectedDpi = isImage ? await detectImageDPI(file) : null;
+                            const finalDpi = detectedDpi || FALLBACK_DPI;
+                            const groupId = generateId('grp');
+                            const baseItem = { id: generateId('upload'), groupId, name: file.name, type: ext, x: 0, y: 0, rotation: 0, originalDpi: finalDpi, detected: !!detectedDpi, quantity: 1 };
+
+                            if (isImage) {
+                                // Use compression for large images
+                                const compressed = await compressImage(file);
+                                if (!compressed) continue;
+
+                                const img = new Image();
+                                await new Promise(resolve => {
+                                    img.onload = () => {
+                                        const wCm = (compressed.width / finalDpi) * 2.54;
+                                        const hCm = (compressed.height / finalDpi) * 2.54;
+                                        const aspectRatio = compressed.width / compressed.height;
+
+                                        // Auto-fit: scale image to fit within canvas (80% max, contain mode)
+                                        const maxW = state.selectedFormat.width * 0.8;
+                                        const maxH = state.selectedFormat.height * 0.8;
+                                        let fitW = wCm, fitH = hCm;
+                                        if (fitW > maxW || fitH > maxH) {
+                                            const scale = Math.min(maxW / fitW, maxH / fitH);
+                                            fitW = fitW * scale;
+                                            fitH = fitH * scale;
+                                        }
+                                        // Center the image on the canvas
+                                        const startX = (state.selectedFormat.width - fitW) / 2;
+                                        const startY = (state.selectedFormat.height - fitH) / 2;
+
+                                        newUploadedItems.push({
+                                            ...baseItem,
+                                            src: compressed.dataUrl,
+                                            originalWidth: wCm,
+                                            originalHeight: hCm,
+                                            width: fitW,
+                                            height: fitH,
+                                            x: startX,
+                                            y: startY,
+                                            aspectRatio,
+                                            isPreviewable: true
+                                        });
+                                        resolve();
+                                    };
+                                    img.onerror = () => resolve();
+                                    img.src = compressed.dataUrl;
+                                });
+
+                                // Update progress
+                                $('#upload-label').text(`${fileIndex + 1}/${files.length} verarbeitet...`);
+                            } else {
+                                newUploadedItems.push({ ...baseItem, src: null, width: 21.0, height: 29.7, originalWidth: 21.0, originalHeight: 29.7, aspectRatio: 21.0 / 29.7, isPreviewable: false });
+                            }
+                        }
+
+                        // Reset upload label
+                        $('#upload-label').text('Datei hinzufügen');
+
+                        // Skip auto-layout in manual mode - use pre-calculated positions
+                        if (state.manualMode) {
+                            const placed = newUploadedItems.map((it, idx) => ({ ...it, id: generateId('item') }));
+                            state.items = [...state.items, ...placed];
+                        } else {
+                            const currentCount = state.items.length;
+                            const placed = newUploadedItems.map((it, idx) => ({ ...it, id: generateId('item'), x: (currentCount + idx) * 0.5, y: (currentCount + idx) * 0.5 }));
+                            const { placedItems, overflowCount } = calculateLayout([...state.items, ...placed], state.selectedFormat.width, state.selectedFormat.height);
+                            if (overflowCount > 0) alert(`${overflowCount} Datei(en) passten nicht mehr auf den Bogen.`);
+                            state.items = placedItems;
+                        }
+
+                        if (newUploadedItems.length) {
+                            const lastGrp = newUploadedItems[newUploadedItems.length - 1].groupId;
+                            state.selectedItemId = state.items.find(i => i.groupId === lastGrp)?.id;
+                        }
+                        e.target.value = '';
+                        updateUI();
+                    });
+
+                    $('#input-qty').on('input', e => updateQuantity(e.target.value));
+                    $('#input-width').on('input', e => updateItemSize('width', e.target.value));
+                    $('#input-height').on('input', e => updateItemSize('height', e.target.value));
+
+                    $('#btn-rotate').on('click', () => {
+                        const active = state.items.find(i => i.id === state.selectedItemId);
+                        if (!active) return;
+                        const newRotation = (active.rotation + 90) % 360;
+
+                        if (state.manualMode) {
+                            // Manual mode: rotate in place, adjust position to keep center
+                            const willBeRotated = newRotation % 180 !== 0;
+                            const wasRotated = active.rotation % 180 !== 0;
+                            let newX = active.x, newY = active.y;
+                            if (willBeRotated !== wasRotated) {
+                                const centerX = active.x + active.width / 2;
+                                const centerY = active.y + active.height / 2;
+                                newX = centerX - active.height / 2;
+                                newY = centerY - active.width / 2;
+                            }
+                            const constrained = constrainToBounds(active, newX, newY, active.width, active.height);
+                            state.items = state.items.map(i => i.id === active.id ? { ...i, rotation: newRotation, x: constrained.x, y: constrained.y } : i);
+                        } else {
+                            const updated = state.items.map(i => i.groupId === active.groupId ? { ...i, rotation: newRotation } : i);
+                            const { placedItems } = calculateLayout(updated, state.selectedFormat.width, state.selectedFormat.height);
+                            state.items = placedItems;
+                        }
+                        state.selectedItemId = state.items.find(i => i.groupId === active.groupId)?.id;
+                        updateUI();
+                    });
+
+                    $('#btn-delete').on('click', () => {
+                        const active = state.items.find(i => i.id === state.selectedItemId);
+                        if (!active) return;
+                        const remaining = state.items.filter(i => i.groupId !== active.groupId);
+                        const { placedItems } = calculateLayout(remaining, state.selectedFormat.width, state.selectedFormat.height);
+                        state.items = placedItems;
+                        state.selectedItemId = null;
+                        updateUI();
+                    });
+
+                    $('#btn-reset-size').on('click', () => {
+                        const active = state.items.find(i => i.id === state.selectedItemId);
+                        if (!active) return;
+                        const updated = state.items.map(i => i.groupId === active.groupId ? { ...i, width: i.originalWidth, height: i.originalHeight } : i);
+                        const { placedItems } = calculateLayout(updated, state.selectedFormat.width, state.selectedFormat.height);
+                        state.items = placedItems;
+                        state.selectedItemId = state.items.find(i => i.groupId === active.groupId)?.id;
+                        updateUI();
+                    });
+
+                    $('#btn-fill-page').on('click', () => {
+                        const active = state.items.find(i => i.id === state.selectedItemId);
+                        if (!active) return;
+                        const w = active.width, h = active.height;
+                        const sW = state.selectedFormat.width, sH = state.selectedFormat.height;
+                        const calc = (iw, ih) => Math.floor((sW + GAP_CM) / (iw + GAP_CM)) * Math.floor((sH + GAP_CM) / (ih + GAP_CM));
+                        const best = Math.max(calc(w, h), calc(h, w));
+                        if (best === 0) alert("Motiv zu groß!");
+                        else updateQuantity(best);
+                    });
+
+                    $('#btn-add-sheet').on('click', () => {
+                        if (!state.items.length) return alert("Bogen leer.");
+                        if (state.collidingIds.length) return alert("Überlappungen beheben!");
+
+                        // Save current sheet
+                        if (state.currentSheetIndex !== null) {
+                            state.savedSheets[state.currentSheetIndex].items = [...state.items];
+                        } else {
+                            state.savedSheets.push({ id: Date.now(), format: state.selectedFormat, items: [...state.items], price: state.selectedFormat.price });
+                        }
+
+                        // Start new sheet
+                        state.currentSheetIndex = null;
+                        state.items = [];
+                        state.selectedItemId = null;
+                        updateUI();
+                    });
+
+                    $('#btn-checkout').on('click', () => {
+                        // Save current sheet if has items
+                        if (state.items.length > 0) {
+                            if (state.currentSheetIndex !== null) {
+                                state.savedSheets[state.currentSheetIndex].items = [...state.items];
+                            } else {
+                                state.savedSheets.push({ id: Date.now(), format: state.selectedFormat, items: [...state.items], price: state.selectedFormat.price });
+                                state.items = [];
+                                state.currentSheetIndex = null;
+                            }
+                        }
+
+                        if (!state.savedSheets.length) return alert("Keine Motive.");
+
+                        // Show order modal
+                        const $container = $('#order-sheets-container').empty();
+                        let total = 0;
+
+                        state.savedSheets.forEach((sheet, index) => {
+                            total += sheet.price;
+                            const itemCount = sheet.items.length;
+                            const $preview = $(`
+                            <div class="border border-slate-200 rounded-xl p-4 mb-4 bg-white">
+                                <div class="flex justify-between items-center mb-3">
+                                    <h3 class="font-bold text-slate-800">Bogen ${index + 1}</h3>
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-sm text-slate-500">${sheet.format.name}</span>
+                                        <span class="font-bold text-green-600">€${sheet.price.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                                <div class="flex flex-wrap gap-2">
+                                    ${sheet.items.slice(0, 5).map(item => `
+                                        <div class="w-16 h-16 bg-slate-100 rounded border border-slate-200 overflow-hidden flex items-center justify-center">
+                                            ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-cover">` : `<i data-lucide="file" class="size-6 text-slate-400"></i>`}
+                                        </div>
+                                    `).join('')}
+                                    ${itemCount > 5 ? `<div class="w-16 h-16 bg-slate-100 rounded border border-slate-200 flex items-center justify-center text-slate-500 font-bold">+${itemCount - 5}</div>` : ''}
+                                </div>
+                                <p class="text-sm text-slate-500 mt-2">${itemCount} Motive</p>
+                            </div>
+                        `);
+                            $container.append($preview);
+                        });
+
+                        $('#order-total-price').text(`€${total.toFixed(2)}`);
+                        $('#order-modal').removeClass('hidden');
+                        lucide.createIcons();
+                        updateUI();
+                    });
+
+                    $('#close-order-modal').on('click', () => {
+                        $('#order-modal').addClass('hidden');
+                    });
+
+                    $('#btn-add-to-cart').on('click', () => {
+                        const total = state.savedSheets.reduce((sum, s) => sum + s.price, 0).toFixed(2);
+                        alert(`${state.savedSheets.length} Bögen wurden zum Warenkorb hinzugefügt!\nGesamt: €${total}`);
+                        $('#order-modal').addClass('hidden');
+                        // Reset state
+                        state.savedSheets = [];
+                        state.items = [];
+                        state.currentSheetIndex = null;
+                        state.selectedItemId = null;
+                        updateUI();
+                    });
+
+                    $(window).on('mousemove', (e) => {
+                        if (!state.selectedItemId) return;
+
+                        // Handle dragging
+                        if (state.isDragging) {
+                            throttledUpdate(() => {
+                                const rect = $('#print-sheet')[0].getBoundingClientRect();
+                                const mouseX = (e.clientX - rect.left) / state.zoom;
+                                const mouseY = (e.clientY - rect.top) / state.zoom;
+                                let nX = pxToCm(mouseX - state.dragOffset.x);
+                                let nY = pxToCm(mouseY - state.dragOffset.y);
+                                const active = state.items.find(i => i.id === state.selectedItemId);
+                                if (!active) return;
+
+                                // Allow free movement outside canvas (Canva-like behavior)
+                                // Canvas clips content that extends beyond bounds
+                                state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, x: nX, y: nY } : i);
+                                updateUI();
+                            });
+                        }
+
+                        // Handle resizing
+                        if (state.isResizing) {
+                            throttledUpdate(() => {
+                                const rect = $('#print-sheet')[0].getBoundingClientRect();
+                                const mouseX = (e.clientX - rect.left) / state.zoom;
+                                const mouseY = (e.clientY - rect.top) / state.zoom;
+                                const deltaX = pxToCm(mouseX - state.resizeStartPos.x);
+                                const deltaY = pxToCm(mouseY - state.resizeStartPos.y);
+                                const active = state.items.find(i => i.id === state.selectedItemId);
+                                if (!active) return;
+                                const resized = calculateResize(
+                                    { ...active, width: state.resizeStartSize.w, height: state.resizeStartSize.h, x: state.resizeStartItemPos.x, y: state.resizeStartItemPos.y },
+                                    state.resizeHandle, deltaX, deltaY, state.aspectRatioLocked
+                                );
+                                // Allow free resize outside canvas (Canva-like behavior)
+                                state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, ...resized } : i);
+                                updateUI();
+                            });
+                        }
+                        // Note: Rotation is now click-based (90° increments), no drag rotation
+                    }).on('mouseup', () => {
+                        if (state.isDragging) $('.item-dragging').removeClass('item-dragging');
+                        if (state.isResizing) $('.item-resizing').removeClass('item-resizing');
+                        state.isDragging = false;
+                        state.isResizing = false;
+                        state.resizeHandle = null;
+                    });
+
+                    $('#print-sheet').on('click', () => { state.selectedItemId = null; updateUI(); });
+
+                    // ===== FIGMA-STYLE PAN & ZOOM =====
+
+                    // Mouse wheel zoom (cursor-relative, works without Ctrl like Figma)
+                    $('#pan-viewport').on('wheel', (e) => {
+                        e.preventDefault();
+                        const $viewport = $('#pan-viewport');
+                        const rect = $viewport[0].getBoundingClientRect();
+                        const mouseX = e.originalEvent.clientX - rect.left;
+                        const mouseY = e.originalEvent.clientY - rect.top;
+
+                        const oldZoom = state.zoom;
+                        // Figma uses scroll for zoom
+                        const zoomDelta = e.originalEvent.deltaY > 0 ? -0.1 : 0.1;
+                        const newZoom = Math.max(0.1, Math.min(5, state.zoom + zoomDelta));
+
+                        if (newZoom !== oldZoom) {
+                            // Calculate the point in canvas space that's under the mouse
+                            const canvasX = (mouseX - state.panX) / oldZoom;
+                            const canvasY = (mouseY - state.panY) / oldZoom;
+
+                            // Apply new zoom
+                            state.zoom = newZoom;
+
+                            // Adjust pan so the same canvas point stays under the mouse
+                            state.panX = mouseX - canvasX * newZoom;
+                            state.panY = mouseY - canvasY * newZoom;
+
+                            updateUI();
+                        }
+                    });
+
+                    // Pan with mouse drag (hand tool)
+                    $('#pan-viewport').on('mousedown', (e) => {
+                        // Only pan if clicking on empty space, not on items or handles
+                        const $target = $(e.target);
+                        if ($target.closest('#items-layer').length &&
+                            ($target.closest('.canvas-item').length || $target.closest('.item-handle').length)) {
+                            return; // Let item interaction handle this
+                        }
+
+                        // Start panning
+                        state.isPanning = true;
+                        state.panStartX = e.clientX;
+                        state.panStartY = e.clientY;
+                        state.panStartPanX = state.panX;
+                        state.panStartPanY = state.panY;
+                        $('#pan-viewport').css('cursor', 'grabbing');
+                        e.preventDefault();
+                    });
+
+                    $(window).on('mousemove.pan', (e) => {
+                        if (state.isPanning) {
+                            const dx = e.clientX - state.panStartX;
+                            const dy = e.clientY - state.panStartY;
+                            state.panX = state.panStartPanX + dx;
+                            state.panY = state.panStartPanY + dy;
+                            $('#pan-layer').css('transform', `translate(${state.panX}px, ${state.panY}px)`);
+                        }
+                    });
+
+                    $(window).on('mouseup.pan', () => {
+                        if (state.isPanning) {
+                            state.isPanning = false;
+                            $('#pan-viewport').css('cursor', 'grab');
+                        }
+                    });
+
+                    // Aspect ratio lock toggle
+                    $(document).on('click', '#toggle-aspect-lock', () => {
+                        state.aspectRatioLocked = !state.aspectRatioLocked;
+                        updateUI();
+                    });
+
+                    // Keyboard shortcuts
+                    $(document).on('keydown', (e) => {
+                        if (!state.selectedItemId) return;
+                        const active = state.items.find(i => i.id === state.selectedItemId);
+                        if (!active) return;
+                        // Delete key
+                        if (e.key === 'Delete' || e.key === 'Backspace') {
+                            e.preventDefault();
+                            state.items = state.items.filter(i => i.groupId !== active.groupId);
+                            state.selectedItemId = null;
+                            updateUI();
+                            return;
+                        }
+                        // Arrow keys for nudging
+                        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                            e.preventDefault();
+                            const nudge = e.shiftKey ? 0.1 : 1.0;
+                            let newX = active.x, newY = active.y;
+                            if (e.key === 'ArrowLeft') newX -= nudge;
+                            if (e.key === 'ArrowRight') newX += nudge;
+                            if (e.key === 'ArrowUp') newY -= nudge;
+                            if (e.key === 'ArrowDown') newY += nudge;
+                            const { width: ew, height: eh } = getEffectiveSize(active);
+                            newX = Math.max(0, Math.min(newX, state.selectedFormat.width - ew));
+                            newY = Math.max(0, Math.min(newY, state.selectedFormat.height - eh));
+                            state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, x: newX, y: newY } : i);
+                            updateUI();
+                        }
+                    });
+
+                    // Re-center canvas on window resize
+                    $(window).on('resize', () => {
+                        if ($('#nw-canvas').is(':visible')) {
+                            centerCanvas();
+                            updateUI();
+                        }
+                    });
+
+                    // Initialize: fallback for cases where canvas is directly visible
+                    setTimeout(() => {
+                        if ($('#nw-canvas').is(':visible')) {
+                            autoScale();
+                            updateUI();
+                        }
+                    }, 300);
+                });
+
+            })
+
+        </script>

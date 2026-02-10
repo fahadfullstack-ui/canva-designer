@@ -1,0 +1,40 @@
+{% comment %} Canvas Designer Section {% endcomment %}
+
+<div class="canvas-designer-section" style="margin: {{ section.settings.margin_top }}px 0 {{ section.settings.margin_bottom }}px 0;">
+  {% render 'canvas-designer' %}
+</div>
+
+{% schema %}
+{
+  "name": "🎨 Canvas Designer",
+  "tag": "section",
+  "class": "canvas-designer-block",
+  "settings": [
+    {
+      "type": "range",
+      "id": "margin_top",
+      "label": "Margin Top",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "default": 20,
+      "unit": "px"
+    },
+    {
+      "type": "range",
+      "id": "margin_bottom",
+      "label": "Margin Bottom",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "default": 20,
+      "unit": "px"
+    }
+  ],
+  "presets": [
+    {
+      "name": "🎨 Canvas Designer"
+    }
+  ]
+}
+{% endschema %}
