@@ -867,30 +867,6 @@ $(document).ready(() => {
                     `).on('click', () => openOrderModal());
         $tabs.append($orderBtn);
 
-        const $saveBtn = $(`
-                        <button id="save-sheet-btn" class="flex items-center gap-2 px-4 py-2.5 ml-2 bg-blue-600 text-white font-bold rounded-xl shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed">
-                            <span class="save-icon"><i data-lucide="save" class="size-5"></i></span>
-                            <span class="save-label">Speichern</span>
-                        </button>
-                    `).on('click', async () => {
-            if (!state.items.length && state.currentSheetIndex === null) return;
-            const $btn = $('#save-sheet-btn');
-            $btn.prop('disabled', true);
-            $btn.find('.save-icon').html('<svg class="animate-spin" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg>');
-            $btn.find('.save-label').text('Speichern…');
-            try {
-                await saveCurrentSheet();
-                showToast('Gespeichert');
-            } catch (e) {
-                showToast('Speichern fehlgeschlagen', 'error');
-            }
-            $btn.find('.save-icon').html('<i data-lucide="save" class="size-5"></i>');
-            $btn.find('.save-label').text('Speichern');
-            $btn.prop('disabled', !isCurrentSheetDirty());
-            updateUI();
-        });
-        $tabs.append($saveBtn);
-
         // Add Close button (X) - to close canvas
         const $closeBtn = $(`
                         <button id="close-canvas-btn" class="flex items-center justify-center w-10 h-10 ml-3 bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-xl transition-all duration-200" title="Schließen">
@@ -903,7 +879,6 @@ $(document).ready(() => {
         $tabs.append($closeBtn);
 
         lucide.createIcons();
-        $('#save-sheet-btn').prop('disabled', !isCurrentSheetDirty());
     };
 
     // Switch to a saved sheet for editing
@@ -922,18 +897,30 @@ $(document).ready(() => {
     // Open the Order Modal with all projects
     const openOrderModal = () => {
         if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
-        guardUnsavedChanges(() => {
-            void (async () => {
-                const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
-                const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
-                if (shouldSave) {
-                    try {
-                        await saveCurrentSheet();
-                    } catch (_) {
-                        showToast('Speichern fehlgeschlagen', 'error');
-                        return;
+        void (async () => {
+            const $orderBtn = $('#bestellen-btn');
+            const originalHtml = $orderBtn.length ? $orderBtn.html() : null;
+            if ($orderBtn.length) {
+                $orderBtn.prop('disabled', true);
+                $orderBtn.removeClass('hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transform hover:scale-105');
+                $orderBtn.html('<svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg><span>Speichern…</span>');
+            }
+
+            const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
+            const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
+            if (shouldSave) {
+                try {
+                    await saveCurrentSheet();
+                } catch (_) {
+                    showToast('Speichern fehlgeschlagen', 'error');
+                    if ($orderBtn.length && originalHtml !== null) {
+                        $orderBtn.prop('disabled', false);
+                        $orderBtn.html(originalHtml);
+                        lucide.createIcons();
                     }
+                    return;
                 }
+            }
 
                 const $grid = $('#order-cards-grid').empty();
                 let totalPrice = 0;
@@ -1097,8 +1084,12 @@ $(document).ready(() => {
 
                 $('#order-modal').removeClass('hidden');
                 lucide.createIcons();
-            })();
-        });
+            if ($orderBtn.length && originalHtml !== null) {
+                $orderBtn.prop('disabled', false);
+                $orderBtn.html(originalHtml);
+                lucide.createIcons();
+            }
+        })();
     };
 
     // Close order modal handlers
