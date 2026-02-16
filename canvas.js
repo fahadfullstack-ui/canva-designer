@@ -23,6 +23,7 @@ $(document).ready(() => {
     const PX_PER_CM = 37.79;
     const GAP_CM = 1.0;
     const FALLBACK_DPI = 300;
+    const EXPORT_DPI = 300;
 
     const FORMATS = [
         { id: 'custom', name: '56 x 100 cm', width: 56, height: 100, price: 19.90 },
@@ -39,6 +40,7 @@ $(document).ready(() => {
         selectedItemId: null,
         zoom: 0.5,
         originalSheetSnapshot: null,
+        isSpaceDown: false,
         // Pan state (Figma-style)
         panX: 0,
         panY: 0,
@@ -71,6 +73,16 @@ $(document).ready(() => {
      */
     const cmToPx = cm => cm * PX_PER_CM;
     const pxToCm = px => px / PX_PER_CM;
+    const pxPerCmAtDpi = (dpi) => dpi / 2.54;
+    const cmToPxAtDpi = (cm, dpi) => cm * pxPerCmAtDpi(dpi);
+    const previewObjectUrls = new Set();
+    const trackPreviewUrl = (url) => {
+        if (typeof url === 'string' && url.startsWith('blob:')) previewObjectUrls.add(url);
+    };
+    const revokeAllPreviewUrls = () => {
+        previewObjectUrls.forEach(u => URL.revokeObjectURL(u));
+        previewObjectUrls.clear();
+    };
     const generateId = (prefix = 'item') => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const getSheetHash = (items, format) => {
         const payload = {
@@ -78,6 +90,105 @@ $(document).ready(() => {
             items: items.map(i => ({ x: i.x, y: i.y, w: i.width, h: i.height, r: i.rotation, g: i.groupId, s: i.src, q: i.quantity }))
         };
         return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    };
+
+    const computeUsedBoxCm = (items, format) => {
+        if (!items || !items.length) return { x: 0, y: 0, width: format.width, height: format.height };
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        items.forEach(item => {
+            const w = item.width;
+            const h = item.height;
+            const rotation = item.rotation || 0;
+            const radians = (rotation * Math.PI) / 180;
+            const cos = Math.abs(Math.cos(radians));
+            const sin = Math.abs(Math.sin(radians));
+            const boundingW = w * cos + h * sin;
+            const boundingH = w * sin + h * cos;
+            const offsetX = (boundingW - w) / 2;
+            const offsetY = (boundingH - h) / 2;
+            const left = item.x - offsetX;
+            const top = item.y - offsetY;
+            const right = item.x + w + offsetX;
+            const bottom = item.y + h + offsetY;
+            minX = Math.min(minX, left);
+            minY = Math.min(minY, top);
+            maxX = Math.max(maxX, right);
+            maxY = Math.max(maxY, bottom);
+        });
+        const x = Math.max(0, Math.min(format.width, minX));
+        const y = Math.max(0, Math.min(format.height, minY));
+        const r = Math.max(0, Math.min(format.width, maxX));
+        const b = Math.max(0, Math.min(format.height, maxY));
+        const width = Math.max(0.01, r - x);
+        const height = Math.max(0.01, b - y);
+        return { x, y, width, height };
+    };
+
+    const crc32 = (() => {
+        const table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+            let c = i;
+            for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            table[i] = c >>> 0;
+        }
+        return (bytes) => {
+            let c = 0xFFFFFFFF;
+            for (let i = 0; i < bytes.length; i++) c = table[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+            return (c ^ 0xFFFFFFFF) >>> 0;
+        };
+    })();
+
+    const setPngDpi = async (blob, dpi) => {
+        if (!blob || blob.type !== 'image/png') return blob;
+        const buf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        if (bytes.length < 33) return blob;
+        const signatureOk =
+            bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47 &&
+            bytes[4] === 0x0D && bytes[5] === 0x0A && bytes[6] === 0x1A && bytes[7] === 0x0A;
+        if (!signatureOk) return blob;
+
+        const ihdrLen = (bytes[8] << 24) | (bytes[9] << 16) | (bytes[10] << 8) | bytes[11];
+        const ihdrType = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+        if (ihdrType !== 'IHDR') return blob;
+        const insertAt = 8 + 4 + 4 + ihdrLen + 4;
+
+        const ppm = Math.round(dpi / 0.0254);
+        const chunkData = new Uint8Array(9);
+        chunkData[0] = (ppm >>> 24) & 0xFF;
+        chunkData[1] = (ppm >>> 16) & 0xFF;
+        chunkData[2] = (ppm >>> 8) & 0xFF;
+        chunkData[3] = ppm & 0xFF;
+        chunkData[4] = (ppm >>> 24) & 0xFF;
+        chunkData[5] = (ppm >>> 16) & 0xFF;
+        chunkData[6] = (ppm >>> 8) & 0xFF;
+        chunkData[7] = ppm & 0xFF;
+        chunkData[8] = 1;
+
+        const typeBytes = new Uint8Array([0x70, 0x48, 0x59, 0x73]);
+        const lenBytes = new Uint8Array([0x00, 0x00, 0x00, 0x09]);
+        const crcInput = new Uint8Array(typeBytes.length + chunkData.length);
+        crcInput.set(typeBytes, 0);
+        crcInput.set(chunkData, typeBytes.length);
+        const crc = crc32(crcInput);
+        const crcBytes = new Uint8Array([
+            (crc >>> 24) & 0xFF,
+            (crc >>> 16) & 0xFF,
+            (crc >>> 8) & 0xFF,
+            crc & 0xFF
+        ]);
+
+        const chunkBytes = new Uint8Array(lenBytes.length + typeBytes.length + chunkData.length + crcBytes.length);
+        chunkBytes.set(lenBytes, 0);
+        chunkBytes.set(typeBytes, 4);
+        chunkBytes.set(chunkData, 8);
+        chunkBytes.set(crcBytes, 17);
+
+        const out = new Uint8Array(bytes.length + chunkBytes.length);
+        out.set(bytes.slice(0, insertAt), 0);
+        out.set(chunkBytes, insertAt);
+        out.set(bytes.slice(insertAt), insertAt + chunkBytes.length);
+        return new Blob([out], { type: 'image/png' });
     };
     const API_UPLOAD_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk';
     const API_FINALIZE_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk/finalize';
@@ -118,16 +229,19 @@ $(document).ready(() => {
         smoothUpdate(100);
         return await finalizeResp.json();
     }
-    async function newUploadFile(file, id) {
+    async function newUploadFile(file, id, dimensionsOverride) {
         const productId = $('.shopify-product-form input[name="id"]').val();
         const sessionId = $('.session_id').val();
+        const wCm = dimensionsOverride?.widthCm ?? state.selectedFormat.width;
+        const hCm = dimensionsOverride?.heightCm ?? state.selectedFormat.height;
+        const dpi = dimensionsOverride?.dpi ?? EXPORT_DPI;
         const dims = {
-            widthCm: state.selectedFormat.width,
-            heightCm: state.selectedFormat.height,
-            widthPx: Math.round(cmToPx(state.selectedFormat.width)),
-            heightPx: Math.round(cmToPx(state.selectedFormat.height))
+            widthCm: wCm,
+            heightCm: hCm,
+            widthPx: Math.round(cmToPxAtDpi(wCm, dpi)),
+            heightPx: Math.round(cmToPxAtDpi(hCm, dpi))
         };
-        const dimsString = `${state.selectedFormat.width} cm x ${state.selectedFormat.height} cm`;
+        const dimsString = `${wCm} cm x ${hCm} cm`;
         const res = await uploadFileInChunks(file, productId, dimsString, sessionId, 1024 * 1024, id);
         if (res) {
             if (typeof window.UpdateFileMeta === 'function') {
@@ -153,9 +267,12 @@ $(document).ready(() => {
             return null;
         }
     }
-    const renderSheetToImage = async (sheet) => {
-        const widthPx = Math.round(cmToPx(sheet.format.width));
-        const heightPx = Math.round(cmToPx(sheet.format.height));
+    const renderSheetToImage = async (sheet, options) => {
+        const dpi = options?.dpi ?? EXPORT_DPI;
+        const trimToUsedArea = options?.trimToUsedArea ?? true;
+        const usedBox = trimToUsedArea ? computeUsedBoxCm(sheet.items || [], sheet.format) : { x: 0, y: 0, width: sheet.format.width, height: sheet.format.height };
+        const widthPx = Math.max(1, Math.round(cmToPxAtDpi(usedBox.width, dpi)));
+        const heightPx = Math.max(1, Math.round(cmToPxAtDpi(usedBox.height, dpi)));
         const canvas = document.createElement('canvas');
         canvas.width = widthPx;
         canvas.height = heightPx;
@@ -169,10 +286,10 @@ $(document).ready(() => {
                 im.onload = () => resolve(im);
                 im.src = item.src;
             });
-            const x = cmToPx(item.x);
-            const y = cmToPx(item.y);
-            const w = cmToPx(item.width);
-            const h = cmToPx(item.height);
+            const x = cmToPxAtDpi(item.x - usedBox.x, dpi);
+            const y = cmToPxAtDpi(item.y - usedBox.y, dpi);
+            const w = cmToPxAtDpi(item.width, dpi);
+            const h = cmToPxAtDpi(item.height, dpi);
             const rad = (item.rotation || 0) * Math.PI / 180;
             ctx.save();
             ctx.translate(x + w / 2, y + h / 2);
@@ -180,10 +297,11 @@ $(document).ready(() => {
             ctx.drawImage(img, -w / 2, -h / 2, w, h);
             ctx.restore();
         }
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+        const rawBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+        const blob = await setPngDpi(rawBlob, dpi);
         const fileName = `sheet_${Date.now()}.png`;
         const file = new File([blob], fileName, { type: 'image/png' });
-        return { file, fileName };
+        return { file, fileName, usedBox, dpi };
     };
     const saveCurrentSheet = async () => {
         let sheet = null;
@@ -198,11 +316,11 @@ $(document).ready(() => {
             state.currentSheetIndex = state.savedSheets.length - 1;
         }
         const hash = getSheetHash(sheet.items, sheet.format);
-        const { file, fileName } = await renderSheetToImage(sheet);
+        const { file, fileName, usedBox } = await renderSheetToImage(sheet, { dpi: EXPORT_DPI, trimToUsedArea: true });
         let uploadRes = null;
         try {
             const sheetIdx = state.savedSheets.indexOf(sheet) + 1;
-            uploadRes = await newUploadFile(file, sheetIdx);
+            uploadRes = await newUploadFile(file, sheetIdx, { widthCm: usedBox.width, heightCm: usedBox.height, dpi: EXPORT_DPI });
         } catch (e) {
             uploadRes = null;
         }
@@ -227,7 +345,9 @@ $(document).ready(() => {
             formatName: state.selectedFormat.name,
             width: state.selectedFormat.width,
             height: state.selectedFormat.height,
-            printSmallElements: state.printSmallElements
+            printSmallElements: state.printSmallElements,
+            exportWidth: usedBox.width,
+            exportHeight: usedBox.height
         };
         const $form = $('.shopify-product-form');
         if ($form.length) {
@@ -270,28 +390,27 @@ $(document).ready(() => {
         openUnsavedModal(next);
     };
 
-    // Image compression to reduce memory usage - compresses large images
-    const compressImage = (file, maxWidth = 2000, quality = 0.8) => {
+    const compressImage = (file, maxSide = 1600, quality = 0.82) => {
         return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const img = new Image();
-                img.onload = () => {
-                    // If image is small enough, use original
-                    if (img.naturalWidth <= maxWidth && file.size < 500000) {
-                        resolve({ dataUrl: e.target.result, width: img.naturalWidth, height: img.naturalHeight });
+            const srcUrl = URL.createObjectURL(file);
+            trackPreviewUrl(srcUrl);
+            const img = new Image();
+            img.onload = async () => {
+                try {
+                    const originalW = img.naturalWidth || 1;
+                    const originalH = img.naturalHeight || 1;
+                    const maxDim = Math.max(originalW, originalH);
+                    const shouldCompress = maxDim > maxSide || file.size > 800000;
+
+                    if (!shouldCompress) {
+                        resolve({ src: srcUrl, width: originalW, height: originalH });
                         return;
                     }
 
-                    // Calculate new dimensions
-                    let width = img.naturalWidth;
-                    let height = img.naturalHeight;
-                    if (width > maxWidth) {
-                        height = (height * maxWidth) / width;
-                        width = maxWidth;
-                    }
+                    const scale = Math.min(1, maxSide / maxDim);
+                    const width = Math.max(1, Math.round(originalW * scale));
+                    const height = Math.max(1, Math.round(originalH * scale));
 
-                    // Use OffscreenCanvas if available for better performance
                     const canvas = document.createElement('canvas');
                     canvas.width = width;
                     canvas.height = height;
@@ -300,18 +419,32 @@ $(document).ready(() => {
                     ctx.imageSmoothingQuality = 'high';
                     ctx.drawImage(img, 0, 0, width, height);
 
-                    // Compress to JPEG for better file size (except PNG with transparency)
-                    const isPNG = file.type === 'image/png';
-                    const outputType = isPNG ? 'image/png' : 'image/jpeg';
-                    const dataUrl = canvas.toDataURL(outputType, isPNG ? 1 : quality);
+                    const isPng = file.type === 'image/png';
+                    const tryWebp = isPng;
+                    const blob = await new Promise((r) => {
+                        if (tryWebp) {
+                            canvas.toBlob((b) => r(b), 'image/webp', quality);
+                            return;
+                        }
+                        canvas.toBlob((b) => r(b), 'image/jpeg', quality);
+                    });
 
-                    resolve({ dataUrl, width: img.naturalWidth, height: img.naturalHeight });
-                };
-                img.onerror = () => resolve({ dataUrl: e.target.result, width: 100, height: 100 });
-                img.src = e.target.result;
+                    if (!blob) {
+                        resolve({ src: srcUrl, width: originalW, height: originalH });
+                        return;
+                    }
+
+                    URL.revokeObjectURL(srcUrl);
+                    previewObjectUrls.delete(srcUrl);
+                    const outUrl = URL.createObjectURL(blob);
+                    trackPreviewUrl(outUrl);
+                    resolve({ src: outUrl, width: originalW, height: originalH });
+                } catch (_) {
+                    resolve({ src: srcUrl, width: img.naturalWidth || 100, height: img.naturalHeight || 100 });
+                }
             };
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(file);
+            img.onerror = () => resolve({ src: srcUrl, width: 100, height: 100 });
+            img.src = srcUrl;
         });
     };
 
@@ -634,7 +767,11 @@ $(document).ready(() => {
     /**
      * RENDERING LOGIC
      */
+    let lastRulersKey = null;
     const renderRulers = () => {
+        const key = `${state.selectedFormat.width}x${state.selectedFormat.height}`;
+        if (key === lastRulersKey) return;
+        lastRulersKey = key;
         const $rh = $('#ruler-h').empty();
         const $rv = $('#ruler-v').empty();
 
@@ -761,6 +898,7 @@ $(document).ready(() => {
                         </button>
                     `).on('click', () => {
             $('#nw-canvas').fadeOut(200);
+            revokeAllPreviewUrls();
         });
         $tabs.append($closeBtn);
 
@@ -782,19 +920,17 @@ $(document).ready(() => {
     };
 
     // Open the Order Modal with all projects
-    const openOrderModal = () => {
-        // First save current sheet if it has items
-        if (state.currentSheetIndex !== null && state.items.length > 0) {
-            state.savedSheets[state.currentSheetIndex].items = [...state.items];
-            state.savedSheets[state.currentSheetIndex].format = state.selectedFormat;
-        } else if (state.currentSheetIndex === null && state.items.length > 0) {
-            state.savedSheets.push({
-                id: Date.now(),
-                format: state.selectedFormat,
-                items: [...state.items],
-                price: state.selectedFormat.price
-            });
-            state.currentSheetIndex = state.savedSheets.length - 1;
+    const openOrderModal = async () => {
+        if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
+        const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
+        const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
+        if (shouldSave) {
+            try {
+                await saveCurrentSheet();
+            } catch (_) {
+                showToast('Speichern fehlgeschlagen', 'error');
+                return;
+            }
         }
 
         const $grid = $('#order-cards-grid').empty();
@@ -807,8 +943,8 @@ $(document).ready(() => {
             totalPrice += sheet.price || sheet.format.price;
 
             // Calculate preview dimensions (fit within card while maintaining aspect ratio)
-            const sheetW = sheet.format.width;
-            const sheetH = sheet.format.height;
+            const sheetW = sheet.options?.exportWidth ?? sheet.format.width;
+            const sheetH = sheet.options?.exportHeight ?? sheet.format.height;
             const previewMaxW = 180;
             const previewMaxH = 180;
             const scale = Math.min(previewMaxW / cmToPx(sheetW), previewMaxH / cmToPx(sheetH));
@@ -817,10 +953,11 @@ $(document).ready(() => {
 
             // Generate positioned items for preview
             const previewItemsHtml = sheet.items.map(item => {
+                const usedBox = sheet.options?.exportWidth && sheet.options?.exportHeight ? computeUsedBoxCm(sheet.items || [], sheet.format) : { x: 0, y: 0 };
                 const itemW = cmToPx(item.width) * scale;
                 const itemH = cmToPx(item.height) * scale;
-                const itemX = cmToPx(item.x) * scale;
-                const itemY = cmToPx(item.y) * scale;
+                const itemX = cmToPx(item.x - usedBox.x) * scale;
+                const itemY = cmToPx(item.y - usedBox.y) * scale;
                 const rotation = item.rotation || 0;
                 return `<img src="${item.src}" style="position: absolute; left: ${itemX}px; top: ${itemY}px; width: ${itemW}px; height: ${itemH}px; transform: rotate(${rotation}deg); transform-origin: center; object-fit: contain; pointer-events: none;" />`;
             }).join('');
@@ -854,11 +991,11 @@ $(document).ready(() => {
                                         </div>
                                         <div class="flex flex-col gap-0.5">
                                             <span>Breite:</span>
-                                            <span class="text-blue-600 font-medium">${sheet.format.width} cm</span>
+                                            <span class="text-blue-600 font-medium">${(sheet.options?.exportWidth ?? sheet.format.width).toFixed(2)} cm</span>
                                         </div>
                                         <div class="flex flex-col gap-0.5">
                                             <span>Höhe:</span>
-                                            <span class="text-blue-600 font-medium">${sheet.format.height} cm</span>
+                                            <span class="text-blue-600 font-medium">${(sheet.options?.exportHeight ?? sheet.format.height).toFixed(2)} cm</span>
                                         </div>
                                         <div class="flex flex-col gap-0.5">
                                             <span>Elemente < 1mm drucken:</span>
@@ -1029,6 +1166,30 @@ $(document).ready(() => {
         state.panY = (viewportH - sheetH) / 2;
     };
 
+    let interactionDomUpdatePending = false;
+    const applyActiveItemDom = () => {
+        if (!state.selectedItemId) return;
+        const item = state.items.find(i => i.id === state.selectedItemId);
+        if (!item) return;
+        const $el = $(`[data-item-id="${item.id}"]`);
+        if (!$el.length) return;
+        $el.css({
+            left: `${cmToPx(item.x)}px`,
+            top: `${cmToPx(item.y)}px`,
+            width: `${cmToPx(item.width)}px`,
+            height: `${cmToPx(item.height)}px`,
+            transform: `rotate(${item.rotation}deg)`
+        });
+    };
+    const scheduleActiveItemDomUpdate = () => {
+        if (interactionDomUpdatePending) return;
+        interactionDomUpdatePending = true;
+        requestAnimationFrame(() => {
+            interactionDomUpdatePending = false;
+            applyActiveItemDom();
+        });
+    };
+
     const updateUI = () => {
         // Render sheet tabs
         renderSheetTabs();
@@ -1070,7 +1231,7 @@ $(document).ready(() => {
                 const isActive = state.items.find(i => i.id === state.selectedItemId)?.groupId === u.groupId;
                 const $thumb = $(`
                 <div class="w-12 h-12 rounded border cursor-pointer overflow-hidden relative ${isActive ? 'border-blue-600 ring-1 ring-blue-600' : 'border-slate-200 hover:border-blue-300'}">
-                    ${u.isPreviewable ? `<img src="${u.src}" class="w-full h-full object-cover">` : `<div class="w-full h-full bg-slate-100 flex items-center justify-center"><i data-lucide="file-text" class="size-4 text-slate-400"></i></div>`}
+                    ${u.isPreviewable ? `<img src="${u.src}" class="w-full h-full object-contain">` : `<div class="w-full h-full bg-slate-100 flex items-center justify-center"><i data-lucide="file-text" class="size-4 text-slate-400"></i></div>`}
                     <div class="absolute bottom-0 right-0 bg-slate-800 text-white text-[8px] px-1 font-bold">${u.quantity}</div>
                 </div>
             `).on('click', () => {
@@ -1141,7 +1302,7 @@ $(document).ready(() => {
             <div class="canvas-item absolute cursor-move select-none flex items-center justify-center ${isSelected ? 'item-active' : ''} ${isColliding ? 'item-collision' : ''} ${isDragOrResize ? (state.isDragging ? 'item-dragging' : 'item-resizing') : ''}" 
                  data-item-id="${item.id}"
                  style="left: ${cmToPx(item.x)}px; top: ${cmToPx(item.y)}px; width: ${cmToPx(item.width)}px; height: ${cmToPx(item.height)}px; transform: rotate(${item.rotation}deg); z-index: ${isSelected ? 10 : 1};">
-                ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-cover pointer-events-none" draggable="false">` : `
+                ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-contain pointer-events-none" draggable="false">` : `
                     <div class="w-full h-full bg-slate-200 border-2 border-slate-300 flex flex-col items-center justify-center p-2 text-center pointer-events-none overflow-hidden">
                         <i data-lucide="file-text" class="text-slate-400 mb-1"></i>
                         <span class="text-[10px] text-slate-600 font-mono break-all leading-tight">${item.name}</span>
@@ -1270,11 +1431,11 @@ $(document).ready(() => {
         autoScale();
         updateUI();
 
-        $('#zoom-in').on('click', () => { state.zoom = Math.min(2, state.zoom + 0.1); updateUI(); });
-        $('#zoom-out').on('click', () => { state.zoom = Math.max(0.1, state.zoom - 0.1); updateUI(); });
+        $('#zoom-in').on('click', () => { state.zoom = Math.min(2, state.zoom + 0.1); centerCanvas(); updateUI(); });
+        $('#zoom-out').on('click', () => { state.zoom = Math.max(0.1, state.zoom - 0.1); centerCanvas(); updateUI(); });
 
         $('#reset-all').on('click', () => {
-            if (confirm('Alles löschen?')) { state.items = []; state.savedSheets = []; state.selectedItemId = null; updateUI(); }
+            if (confirm('Alles löschen?')) { revokeAllPreviewUrls(); state.items = []; state.savedSheets = []; state.selectedItemId = null; updateUI(); }
         });
 
         $('#btn-print-small-yes').on('click', function () {
@@ -1333,7 +1494,7 @@ $(document).ready(() => {
 
                             newUploadedItems.push({
                                 ...baseItem,
-                                src: compressed.dataUrl,
+                                src: compressed.src,
                                 originalWidth: wCm,
                                 originalHeight: hCm,
                                 width: fitW,
@@ -1346,7 +1507,7 @@ $(document).ready(() => {
                             resolve();
                         };
                         img.onerror = () => resolve();
-                        img.src = compressed.dataUrl;
+                        img.src = compressed.src;
                     });
 
                     // Update progress
@@ -1452,53 +1613,7 @@ $(document).ready(() => {
         });
 
         $('#btn-checkout').on('click', () => {
-            // Save current sheet if has items
-            if (state.items.length > 0) {
-                if (state.currentSheetIndex !== null) {
-                    state.savedSheets[state.currentSheetIndex].items = [...state.items];
-                } else {
-                    state.savedSheets.push({ id: Date.now(), format: state.selectedFormat, items: [...state.items], price: state.selectedFormat.price });
-                    state.items = [];
-                    state.currentSheetIndex = null;
-                }
-            }
-
-            if (!state.savedSheets.length) return alert("Keine Motive.");
-
-            // Show order modal
-            const $container = $('#order-sheets-container').empty();
-            let total = 0;
-
-            state.savedSheets.forEach((sheet, index) => {
-                total += sheet.price;
-                const itemCount = sheet.items.length;
-                const $preview = $(`
-                            <div class="border border-slate-200 rounded-xl p-4 mb-4 bg-white">
-                                <div class="flex justify-between items-center mb-3">
-                                    <h3 class="font-bold text-slate-800">Bogen ${index + 1}</h3>
-                                    <div class="flex items-center gap-3">
-                                        <span class="text-sm text-slate-500">${sheet.format.name}</span>
-                                        <span class="font-bold text-green-600">€${sheet.price.toFixed(2)}</span>
-                                    </div>
-                                </div>
-                                <div class="flex flex-wrap gap-2">
-                                    ${sheet.items.slice(0, 5).map(item => `
-                                        <div class="w-16 h-16 bg-slate-100 rounded border border-slate-200 overflow-hidden flex items-center justify-center">
-                                            ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-cover">` : `<i data-lucide="file" class="size-6 text-slate-400"></i>`}
-                                        </div>
-                                    `).join('')}
-                                    ${itemCount > 5 ? `<div class="w-16 h-16 bg-slate-100 rounded border border-slate-200 flex items-center justify-center text-slate-500 font-bold">+${itemCount - 5}</div>` : ''}
-                                </div>
-                                <p class="text-sm text-slate-500 mt-2">${itemCount} Motive</p>
-                            </div>
-                        `);
-                $container.append($preview);
-            });
-
-            $('#order-total-price').text(`€${total.toFixed(2)}`);
-            $('#order-modal').removeClass('hidden');
-            lucide.createIcons();
-            updateUI();
+            openOrderModal();
         });
 
         $('#close-order-modal').on('click', () => {
@@ -1550,6 +1665,7 @@ $(document).ready(() => {
             }
 
             // Reset state
+            revokeAllPreviewUrls();
             state.savedSheets = [];
             state.items = [];
             state.currentSheetIndex = null;
@@ -1566,15 +1682,13 @@ $(document).ready(() => {
                     const rect = $('#print-sheet')[0].getBoundingClientRect();
                     const mouseX = (e.clientX - rect.left) / state.zoom;
                     const mouseY = (e.clientY - rect.top) / state.zoom;
-                    let nX = pxToCm(mouseX - state.dragOffset.x);
-                    let nY = pxToCm(mouseY - state.dragOffset.y);
                     const active = state.items.find(i => i.id === state.selectedItemId);
                     if (!active) return;
-
-                    // Allow free movement outside canvas (Canva-like behavior)
-                    // Canvas clips content that extends beyond bounds
-                    state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, x: nX, y: nY } : i);
-                    updateUI();
+                    const nX = pxToCm(mouseX - state.dragOffset.x);
+                    const nY = pxToCm(mouseY - state.dragOffset.y);
+                    const constrained = constrainToBounds(active, nX, nY, active.width, active.height);
+                    state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, ...constrained } : i);
+                    scheduleActiveItemDomUpdate();
                 });
             }
 
@@ -1592,55 +1706,41 @@ $(document).ready(() => {
                         { ...active, width: state.resizeStartSize.w, height: state.resizeStartSize.h, x: state.resizeStartItemPos.x, y: state.resizeStartItemPos.y },
                         state.resizeHandle, deltaX, deltaY, state.aspectRatioLocked
                     );
-                    // Allow free resize outside canvas (Canva-like behavior)
-                    state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, ...resized } : i);
-                    updateUI();
+                    const constrained = constrainToBounds(active, resized.x, resized.y, resized.width, resized.height);
+                    state.items = state.items.map(i => i.id === state.selectedItemId ? { ...i, ...constrained } : i);
+                    scheduleActiveItemDomUpdate();
                 });
             }
             // Note: Rotation is now click-based (90° increments), no drag rotation
         }).on('mouseup', () => {
+            const didInteract = state.isDragging || state.isResizing;
             if (state.isDragging) $('.item-dragging').removeClass('item-dragging');
             if (state.isResizing) $('.item-resizing').removeClass('item-resizing');
             state.isDragging = false;
             state.isResizing = false;
             state.resizeHandle = null;
+            if (didInteract) updateUI();
         });
 
         $('#print-sheet').on('click', () => { state.selectedItemId = null; updateUI(); });
 
         // ===== FIGMA-STYLE PAN & ZOOM =====
 
-        // Mouse wheel zoom (cursor-relative, works without Ctrl like Figma)
+        // Mouse wheel zoom (Ctrl+wheel only)
         $('#pan-viewport').on('wheel', (e) => {
+            if (!e.originalEvent.ctrlKey) return;
             e.preventDefault();
-            const $viewport = $('#pan-viewport');
-            const rect = $viewport[0].getBoundingClientRect();
-            const mouseX = e.originalEvent.clientX - rect.left;
-            const mouseY = e.originalEvent.clientY - rect.top;
-
-            const oldZoom = state.zoom;
-            // Figma uses scroll for zoom
             const zoomDelta = e.originalEvent.deltaY > 0 ? -0.1 : 0.1;
             const newZoom = Math.max(0.1, Math.min(5, state.zoom + zoomDelta));
-
-            if (newZoom !== oldZoom) {
-                // Calculate the point in canvas space that's under the mouse
-                const canvasX = (mouseX - state.panX) / oldZoom;
-                const canvasY = (mouseY - state.panY) / oldZoom;
-
-                // Apply new zoom
-                state.zoom = newZoom;
-
-                // Adjust pan so the same canvas point stays under the mouse
-                state.panX = mouseX - canvasX * newZoom;
-                state.panY = mouseY - canvasY * newZoom;
-
-                updateUI();
-            }
+            if (newZoom === state.zoom) return;
+            state.zoom = newZoom;
+            centerCanvas();
+            updateUI();
         });
 
         // Pan with mouse drag (hand tool)
         $('#pan-viewport').on('mousedown', (e) => {
+            if (!(state.isSpaceDown || e.button === 1)) return;
             // Only pan if clicking on empty space, not on items or handles
             const $target = $(e.target);
             if ($target.closest('#items-layer').length &&
@@ -1679,6 +1779,18 @@ $(document).ready(() => {
         $(document).on('click', '#toggle-aspect-lock', () => {
             state.aspectRatioLocked = !state.aspectRatioLocked;
             updateUI();
+        });
+
+        $(document).on('keydown', (e) => {
+            if (e.code !== 'Space') return;
+            if (state.isSpaceDown) return;
+            state.isSpaceDown = true;
+            if ($('#nw-canvas').is(':visible')) e.preventDefault();
+        });
+        $(document).on('keyup', (e) => {
+            if (e.code !== 'Space') return;
+            state.isSpaceDown = false;
+            if ($('#nw-canvas').is(':visible')) e.preventDefault();
         });
 
         // Keyboard shortcuts
