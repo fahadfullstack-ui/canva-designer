@@ -920,22 +920,24 @@ $(document).ready(() => {
     };
 
     // Open the Order Modal with all projects
-    const openOrderModal = async () => {
+    const openOrderModal = () => {
         if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
-        const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
-        const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
-        if (shouldSave) {
-            try {
-                await saveCurrentSheet();
-            } catch (_) {
-                showToast('Speichern fehlgeschlagen', 'error');
-                return;
-            }
-        }
+        guardUnsavedChanges(() => {
+            void (async () => {
+                const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
+                const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
+                if (shouldSave) {
+                    try {
+                        await saveCurrentSheet();
+                    } catch (_) {
+                        showToast('Speichern fehlgeschlagen', 'error');
+                        return;
+                    }
+                }
 
-        const $grid = $('#order-cards-grid').empty();
-        let totalPrice = 0;
-        let totalProducts = 0;
+                const $grid = $('#order-cards-grid').empty();
+                let totalPrice = 0;
+                let totalProducts = 0;
 
         // Render each saved sheet as a card
         state.savedSheets.filter(s => !!s.savedUrl).forEach((sheet, index) => {
@@ -1093,9 +1095,10 @@ $(document).ready(() => {
         $('#order-product-count').text(totalProducts);
         $('#order-total-price').text(`€${totalPrice.toFixed(2)}`);
 
-        // Show modal
-        $('#order-modal').removeClass('hidden');
-        lucide.createIcons();
+                $('#order-modal').removeClass('hidden');
+                lucide.createIcons();
+            })();
+        });
     };
 
     // Close order modal handlers
