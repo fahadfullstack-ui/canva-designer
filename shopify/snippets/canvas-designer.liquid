@@ -563,6 +563,11 @@
 
             $(document).ready(() => {
 
+                // Generate Session ID
+                const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                $('.shopify-product-form').append('<input type="hidden" name="properties[_dtf_type]" value="canvas" />')
+                $('.shopify-product-form').append(`<input type="hidden" class="session_id" name="properties[_dtf_session_id]" value="${sessionId}" />`);
+
                 const canvas = $('#nw-canvas');
                 $('body').prepend(canvas);
 
@@ -684,7 +689,8 @@
                         widthPx: Math.round(cmToPx(state.selectedFormat.width)),
                         heightPx: Math.round(cmToPx(state.selectedFormat.height))
                     };
-                    const res = await uploadFileInChunks(file, productId, dims, sessionId, 1024 * 1024, id);
+                    const dimsString = `${state.selectedFormat.width} cm x ${state.selectedFormat.height} cm`;
+                    const res = await uploadFileInChunks(file, productId, dimsString, sessionId, 1024 * 1024, id);
                     if (res) {
                         if (typeof window.UpdateFileMeta === 'function') {
                             window.UpdateFileMeta(id, 'uploaded_name', res.fileName);
@@ -763,14 +769,18 @@
                     }
                     let tempUrl = null;
                     let fileId = null;
+                    let savedFileName = fileName;
                     if (uploadRes && uploadRes.tempUrl) {
                         tempUrl = uploadRes.tempUrl;
                         fileId = uploadRes.fileId || null;
+                        if (uploadRes.fileName) {
+                            savedFileName = uploadRes.fileName;
+                        }
                     } else {
                         tempUrl = URL.createObjectURL(file);
                     }
                     sheet.savedUrl = tempUrl;
-                    sheet.savedFileName = fileName;
+                    sheet.savedFileName = savedFileName;
                     sheet.fileId = fileId;
                     sheet.lastSavedHash = hash;
                     sheet.options = {
@@ -783,8 +793,8 @@
                     const $form = $('.shopify-product-form');
                     if ($form.length) {
                         const idx = state.savedSheets.indexOf(sheet);
-                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Url]" value="${tempUrl}">`);
-                        $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Name]" value="${fileName}">`);
+                        $form.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Url]" value="${tempUrl}">`);
+                        $form.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Name]" value="${savedFileName}">`);
                         $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
                         $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
                         $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options.formatName}">`);
@@ -2070,8 +2080,8 @@
                         
                         // Add properties to the form
                         saved.forEach((sheet, idx) => {
-                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Url]" value="${sheet.savedUrl}">`);
-                            $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Name]" value="${sheet.savedFileName || ''}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Url]" value="${sheet.savedUrl}">`);
+                            $mainForm.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Name]" value="${sheet.savedFileName || ''}">`);
                             $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
                             $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
                             $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options?.formatName || ''}">`);
