@@ -192,6 +192,7 @@ $(document).ready(() => {
     };
     const API_UPLOAD_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk';
     const API_FINALIZE_URL = 'https://dtfworld.hamzadeveloper.com/api/upload-chunk/finalize';
+    const DEFAULT_UPLOAD_CHUNK_SIZE = 1024 * 1024;
     async function uploadFileInChunks(file, productId, dimensions, sessionId, chunkSize, id) {
         let visualProgress = 0;
         const smoothUpdate = (target) => {
@@ -242,7 +243,7 @@ $(document).ready(() => {
             heightPx: Math.round(cmToPxAtDpi(hCm, dpi))
         };
         const dimsString = `${wCm} cm x ${hCm} cm`;
-        const res = await uploadFileInChunks(file, productId, dimsString, sessionId, 1024 * 1024, id);
+        const res = await uploadFileInChunks(file, productId, dimsString, sessionId, DEFAULT_UPLOAD_CHUNK_SIZE, id);
         if (res) {
             if (typeof window.UpdateFileMeta === 'function') {
                 window.UpdateFileMeta(id, 'uploaded_name', res.fileName);
@@ -267,6 +268,22 @@ $(document).ready(() => {
             return null;
         }
     }
+    const renderImageCache = new Map();
+    const loadRenderImage = (src) => {
+        if (!src) return Promise.resolve(null);
+        const existing = renderImageCache.get(src);
+        if (existing) return existing;
+        const p = new Promise((resolve) => {
+            const im = new Image();
+            im.decoding = 'async';
+            if (/^https?:/i.test(src)) im.crossOrigin = 'anonymous';
+            im.onload = () => resolve(im);
+            im.onerror = () => resolve(null);
+            im.src = src;
+        });
+        renderImageCache.set(src, p);
+        return p;
+    };
     const renderSheetToImage = async (sheet, options) => {
         const dpi = options?.dpi ?? EXPORT_DPI;
         const trimToUsedArea = options?.trimToUsedArea ?? true;
@@ -278,14 +295,12 @@ $(document).ready(() => {
         canvas.height = heightPx;
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, widthPx, heightPx);
+        const srcs = [...new Set((sheet.items || []).map(i => i?.src).filter(Boolean))];
+        await Promise.all(srcs.map(loadRenderImage));
         for (const item of sheet.items) {
             if (!item.src) continue;
-            const img = await new Promise(resolve => {
-                const im = new Image();
-                im.crossOrigin = 'anonymous';
-                im.onload = () => resolve(im);
-                im.src = item.src;
-            });
+            const img = await loadRenderImage(item.src);
+            if (!img) continue;
             const x = cmToPxAtDpi(item.x - usedBox.x, dpi);
             const y = cmToPxAtDpi(item.y - usedBox.y, dpi);
             const w = cmToPxAtDpi(item.width, dpi);
@@ -860,21 +875,20 @@ $(document).ready(() => {
 
         // Add BESTELLEN button (Order button) - right side
         const $orderBtn = $(`
-                        <button id="bestellen-btn" class="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105">
+                        <button id="bestellen-btn" type="button" class="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105">
                             <i data-lucide="shopping-bag" class="size-5"></i>
                             <span>BESTELLEN</span>
                         </button>
-                    `).on('click', () => openOrderModal());
+                    `).on('click', (e) => { e.preventDefault(); e.stopPropagation(); openOrderModal(); });
         $tabs.append($orderBtn);
 
         // Add Close button (X) - to close canvas
         const $closeBtn = $(`
-                        <button id="close-canvas-btn" class="flex items-center justify-center w-10 h-10 ml-3 bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-xl transition-all duration-200" title="Schließen">
+                        <button id="close-canvas-btn" type="button" class="flex items-center justify-center w-10 h-10 ml-3 bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-xl transition-all duration-200" title="Schließen">
                             <i data-lucide="x" class="size-6"></i>
                         </button>
                     `).on('click', () => {
             $('#nw-canvas').fadeOut(200);
-            revokeAllPreviewUrls();
         });
         $tabs.append($closeBtn);
 
@@ -899,27 +913,39 @@ $(document).ready(() => {
         if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
         void (async () => {
             const $orderBtn = $('#bestellen-btn');
-            const originalHtml = $orderBtn.length ? $orderBtn.html() : null;
-            if ($orderBtn.length) {
-                $orderBtn.prop('disabled', true);
-                $orderBtn.removeClass('hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transform hover:scale-105');
-                $orderBtn.html('<svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg><span>Speichern…</span>');
-            }
-
-            const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
-            const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
-            if (shouldSave) {
-                try {
-                    await saveCurrentSheet();
-                } catch (_) {
-                    showToast('Speichern fehlgeschlagen', 'error');
-                    if ($orderBtn.length && originalHtml !== null) {
-                        $orderBtn.prop('disabled', false);
-                        $orderBtn.html(originalHtml);
-                        lucide.createIcons();
+            const $checkoutBtn = $('#btn-checkout');
+            const originalOrderHtml = $orderBtn.length ? $orderBtn.html() : null;
+            const originalCheckoutHtml = $checkoutBtn.length ? $checkoutBtn.html() : null;
+            const setLoading = (loading) => {
+                if ($orderBtn.length && originalOrderHtml !== null) {
+                    $orderBtn.prop('disabled', loading);
+                    if (loading) {
+                        $orderBtn.removeClass('hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transform hover:scale-105');
+                        $orderBtn.html('<svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg><span>Speichern…</span>');
+                    } else {
+                        $orderBtn.html(originalOrderHtml);
                     }
-                    return;
                 }
+                if ($checkoutBtn.length && originalCheckoutHtml !== null) {
+                    $checkoutBtn.prop('disabled', loading);
+                    if (loading) {
+                        $checkoutBtn.html('<svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg><span>Speichern…</span>');
+                    } else {
+                        $checkoutBtn.html(originalCheckoutHtml);
+                    }
+                }
+                lucide.createIcons();
+            };
+
+            setLoading(true);
+            try {
+                const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
+                const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
+                if (shouldSave) await saveCurrentSheet();
+            } catch (_) {
+                showToast('Speichern fehlgeschlagen', 'error');
+                setLoading(false);
+                return;
             }
 
                 const $grid = $('#order-cards-grid').empty();
@@ -1084,11 +1110,7 @@ $(document).ready(() => {
 
                 $('#order-modal').removeClass('hidden');
                 lucide.createIcons();
-            if ($orderBtn.length && originalHtml !== null) {
-                $orderBtn.prop('disabled', false);
-                $orderBtn.html(originalHtml);
-                lucide.createIcons();
-            }
+            setLoading(false);
         })();
     };
 
