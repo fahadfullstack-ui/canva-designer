@@ -3,8 +3,15 @@
 <script src="https://unpkg.com/lucide@latest"></script>
 <script>
  const PRODUCT = {{ product | json }};   
- console.log(PRODUCT)
- const FILE_TYPE = {{ product.metafields.custom.file_type | json |  default: 'Uncategorized' }};
+ const CURRENCY = {{ cart.currency.iso_code | default: shop.currency | json }};
+ const VARIANT_FORMAT_META = {
+  {%- for v in product.variants -%}
+    {{ v.id | json }}: {
+      widthCm: {{ v.metafields.custom.width_cm.value | default: nil | json }},
+      heightCm: {{ v.metafields.custom.height_cm.value | default: nil | json }}
+    }{% unless forloop.last %},{% endunless %}
+  {%- endfor -%}
+ };
 </script>
 {{ "canvas.js" | asset_url | script_tag }}
 

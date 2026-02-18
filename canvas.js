@@ -1,7 +1,6 @@
 $(document).ready(() => {
     // Generate Session ID
     const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    $('.shopify-product-form').append(`<input type="hidden" name="properties[File Type]" value="${FILE_TYPE}" />`)
     $('.shopify-product-form').append('<input type="hidden" name="properties[_dtf_type]" value="canvas" />')
     $('.shopify-product-form').append(`<input type="hidden" class="session_id" name="properties[_dtf_session_id]" value="${sessionId}" />`);
     $('.product-info__quantity-selector').css('display','none')
@@ -25,11 +24,50 @@ $(document).ready(() => {
     const FALLBACK_DPI = 300;
     const EXPORT_DPI = 300;
 
-    const FORMATS = [
+    const FALLBACK_FORMATS = [
         { id: 'custom', name: '56 x 100 cm', width: 56, height: 100, price: 19.90 },
         { id: 'a4', name: 'DIN A4 (21 x 29.7 cm)', width: 21.0, height: 29.7, price: 7.90 },
         { id: 'a3', name: 'DIN A3 (29.7 x 42 cm)', width: 29.7, height: 42.0, price: 12.50 },
     ];
+
+    const parseFormatDimensions = (text) => {
+        if (!text) return null;
+        const match = String(text).match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+        if (!match) return null;
+        const width = parseFloat(match[1].replace(',', '.'));
+        const height = parseFloat(match[2].replace(',', '.'));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+        return { width, height };
+    };
+
+    const buildFormatsFromShopifyProduct = () => {
+        const product = typeof PRODUCT !== 'undefined' ? PRODUCT : null;
+        if (!product || !Array.isArray(product.variants)) return null;
+        const formats = product.variants.map((v) => {
+            const name = v?.option1 || v?.title || '';
+            const meta = typeof VARIANT_FORMAT_META !== 'undefined' && VARIANT_FORMAT_META ? VARIANT_FORMAT_META[String(v?.id)] : null;
+            const metaW = meta?.widthCm != null ? Number(meta.widthCm) : null;
+            const metaH = meta?.heightCm != null ? Number(meta.heightCm) : null;
+            const dims = (Number.isFinite(metaW) && Number.isFinite(metaH)) ? { width: metaW, height: metaH } : parseFormatDimensions(name);
+            if (!dims) return null;
+            const priceMinor = Number(v?.price);
+            const price = Number.isFinite(priceMinor) ? priceMinor / 100 : 0;
+            return {
+                id: String(v.id),
+                name,
+                width: dims.width,
+                height: dims.height,
+                price,
+                variantId: String(v.id),
+                priceMinor
+            };
+        }).filter(Boolean);
+        if (!formats.length) return null;
+        return formats;
+    };
+
+    let FORMATS = buildFormatsFromShopifyProduct() || FALLBACK_FORMATS;
+    if (!FORMATS.length) FORMATS = FALLBACK_FORMATS;
 
     let state = {
         selectedFormat: FORMATS[0],
@@ -68,6 +106,10 @@ $(document).ready(() => {
         rotateCenter: { x: 0, y: 0 }
     };
 
+    const initialVariantId = $('.shopify-product-form input[name="id"], form[action="/cart/add"] input[name="id"]').first().val();
+    const initialFormat = initialVariantId ? FORMATS.find(f => String(f.variantId || f.id) === String(initialVariantId)) : null;
+    if (initialFormat) state.selectedFormat = initialFormat;
+
     /**
      * UTILS
      */
@@ -76,6 +118,59 @@ $(document).ready(() => {
     const pxPerCmAtDpi = (dpi) => dpi / 2.54;
     const cmToPxAtDpi = (cm, dpi) => cm * pxPerCmAtDpi(dpi);
     const previewObjectUrls = new Set();
+    const formatPrice = (valueMajor) => {
+        const currency = typeof CURRENCY !== 'undefined' ? CURRENCY : null;
+        const value = Number(valueMajor);
+        if (Number.isNaN(value)) return '';
+        if (currency) {
+            try {
+                return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(value);
+            } catch (_) {
+            }
+        }
+        return `€${value.toFixed(2)}`;
+    };
+
+    const selectShopifyVariantById = (variantId) => {
+        if (!variantId) return false;
+        const id = String(variantId);
+        const $radio = $(`[data-variant-id="${id}"]`).filter('input[type="radio"]').first();
+        if ($radio.length) {
+            $radio.trigger('click');
+            return true;
+        }
+        const $option = $(`option[data-variant-id="${id}"]`).first();
+        if ($option.length) {
+            const $select = $option.closest('select');
+            $select.val($option.val());
+            $select.trigger('change');
+            return true;
+        }
+        const $variantInput = $('.shopify-product-form input[name="id"], form[action="/cart/add"] input[name="id"]').first();
+        if ($variantInput.length) {
+            $variantInput.val(id);
+            $variantInput.trigger('change');
+            return true;
+        }
+        return false;
+    };
+
+    const applySelectedVariantToDesigner = (variantId) => {
+        if (!variantId) return;
+        const id = String(variantId);
+        const match = FORMATS.find(f => String(f.variantId || f.id) === id);
+        if (!match) return;
+        if (state.selectedFormat?.id === match.id) return;
+        state.selectedFormat = match;
+        autoScale();
+        updateUI();
+    };
+
+    const getSelectedVariantIdFromDom = () => {
+        const id = $('.shopify-product-form input[name="id"], form[action="/cart/add"] input[name="id"]').first().val();
+        return id ? String(id) : null;
+    };
+
     const trackPreviewUrl = (url) => {
         if (typeof url === 'string' && url.startsWith('blob:')) previewObjectUrls.add(url);
     };
@@ -84,9 +179,10 @@ $(document).ready(() => {
         previewObjectUrls.clear();
     };
     const generateId = (prefix = 'item') => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const getSheetHash = (items, format) => {
+    const getSheetHash = (items, format, options) => {
         const payload = {
-            format: { w: format.width, h: format.height },
+            format: { id: format?.id ?? null, variantId: format?.variantId ?? null, w: format.width, h: format.height },
+            options: { printSmallElements: options?.printSmallElements ?? null, formatName: options?.formatName ?? null },
             items: items.map(i => ({ x: i.x, y: i.y, w: i.width, h: i.height, r: i.rotation, g: i.groupId, s: i.src, q: i.quantity }))
         };
         return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
@@ -330,7 +426,7 @@ $(document).ready(() => {
             state.savedSheets.push(sheet);
             state.currentSheetIndex = state.savedSheets.length - 1;
         }
-        const hash = getSheetHash(sheet.items, sheet.format);
+        const hash = getSheetHash(sheet.items, sheet.format, { printSmallElements: state.printSmallElements, formatName: state.selectedFormat.name });
         const { file, fileName, usedBox } = await renderSheetToImage(sheet, { dpi: EXPORT_DPI, trimToUsedArea: true });
         let uploadRes = null;
         try {
@@ -358,6 +454,7 @@ $(document).ready(() => {
         sheet.options = {
             formatId: state.selectedFormat.id,
             formatName: state.selectedFormat.name,
+            variantId: state.selectedFormat.variantId || getSelectedVariantIdFromDom(),
             width: state.selectedFormat.width,
             height: state.selectedFormat.height,
             printSmallElements: state.printSmallElements,
@@ -386,8 +483,8 @@ $(document).ready(() => {
         if (state.currentSheetIndex === null) return state.items.length > 0;
         const sheet = state.savedSheets[state.currentSheetIndex];
         if (!sheet) return false;
-        const currentHash = getSheetHash(state.items, state.selectedFormat);
-        const savedHash = sheet.lastSavedHash || getSheetHash(sheet.items, sheet.format);
+        const currentHash = getSheetHash(state.items, state.selectedFormat, { printSmallElements: state.printSmallElements, formatName: state.selectedFormat.name });
+        const savedHash = getSheetHash(sheet.items, sheet.format, { printSmallElements: sheet.options?.printSmallElements, formatName: sheet.options?.formatName });
         return currentHash !== savedHash;
     };
     let pendingGuardNext = null;
@@ -910,7 +1007,6 @@ $(document).ready(() => {
 
     // Open the Order Modal with all projects
     const openOrderModal = () => {
-        if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
         void (async () => {
             const $orderBtn = $('#bestellen-btn');
             const $checkoutBtn = $('#btn-checkout');
@@ -939,11 +1035,16 @@ $(document).ready(() => {
 
             setLoading(true);
             try {
-                const currentSheet = state.currentSheetIndex !== null ? state.savedSheets[state.currentSheetIndex] : null;
-                const shouldSave = state.items.length > 0 && (state.currentSheetIndex === null || isCurrentSheetDirty() || !currentSheet?.savedUrl);
-                if (shouldSave) await saveCurrentSheet();
+                await saveCurrentSheet();
             } catch (_) {
                 showToast('Speichern fehlgeschlagen', 'error');
+                setLoading(false);
+                return;
+            }
+
+            updateUI();
+            if (state.collidingIds.length) {
+                showToast('Überlappungen beheben!', 'error');
                 setLoading(false);
                 return;
             }
@@ -1106,7 +1207,7 @@ $(document).ready(() => {
 
         // Update footer totals
         $('#order-product-count').text(totalProducts);
-        $('#order-total-price').text(`€${totalPrice.toFixed(2)}`);
+        $('#order-total-price').text(formatPrice(totalPrice));
 
                 $('#order-modal').removeClass('hidden');
                 lucide.createIcons();
@@ -1143,7 +1244,12 @@ $(document).ready(() => {
         lucide.createIcons();
         try {
             await saveCurrentSheet();
-            showToast('Gespeichert');
+            updateUI();
+            if (state.collidingIds.length) {
+                showToast('Überlappungen beheben!', 'error');
+            } else {
+                showToast('Gespeichert');
+            }
         } catch (_) {
             showToast('Speichern fehlgeschlagen', 'error');
         } finally {
@@ -1229,7 +1335,14 @@ $(document).ready(() => {
                 <span>${f.name}</span>
                 ${isActive ? '<div class="w-2 h-2 rounded-full bg-blue-600"></div>' : ''}
             </button>
-        `).on('click', () => { state.selectedFormat = f; autoScale(); updateUI(); });
+        `).on('click', () => {
+                const didSelect = selectShopifyVariantById(f.variantId || f.id);
+                if (!didSelect) {
+                    state.selectedFormat = f;
+                    autoScale();
+                    updateUI();
+                }
+            });
             $('#format-options').append($btn);
         });
 
@@ -1305,7 +1418,7 @@ $(document).ready(() => {
             }
         }
         state.collidingIds = Array.from(ids);
-        $('#collision-warning').toggle(state.collidingIds.length > 0);
+        $('#collision-warning').toggleClass('hidden', state.collidingIds.length === 0);
         $('#btn-checkout').prop('disabled', state.collidingIds.length > 0);
 
         // Canvas Items
@@ -1377,7 +1490,7 @@ $(document).ready(() => {
         const totalSheets = state.savedSheets.length + currentSheetCount;
         const totalPrice = (state.savedSheets.reduce((sum, s) => sum + s.price, 0) + (currentSheetCount ? state.selectedFormat.price : 0)).toFixed(2);
         $('#sheet-count-label').text(`${totalSheets} Bogen konfiguriert`);
-        $('#total-price-label').text(`€${totalPrice}`);
+        $('#total-price-label').text(formatPrice(Number(totalPrice)));
 
         renderRulers();
         lucide.createIcons();
@@ -1640,53 +1753,108 @@ $(document).ready(() => {
             const saved = state.savedSheets.filter(s => !!s.savedUrl);
             if (!saved.length) { showToast('Keine gespeicherten Bögen', 'info'); return; }
 
-            // Find the main product form
-            const $mainForm = $('.shopify-product-form, form[action="/cart/add"]');
-            if (!$mainForm.length) { showToast('Produktformular nicht gefunden', 'error'); return; }
-
-            const variantId = $mainForm.find('input[name="id"]').val();
-            if (!variantId) { showToast('Produkt ID fehlt', 'error'); return; }
-
-            // Clear existing hidden property inputs to avoid duplication
-            $mainForm.find('input[name^="properties[Frame"]').remove();
-            console.log(saved)
-            // Add properties to the form
-            saved.forEach((sheet, idx) => {
-                // $mainForm.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Url]" value="${sheet.savedUrl}">`);
-                // $mainForm.append(`<input type="hidden" name="properties[_Frame_${idx + 1}_Name]" value="${sheet.savedFileName || ''}">`);
-                // $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
-                // $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
-                // $mainForm.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options?.formatName || ''}">`);
-                $mainForm.append(`<input type="hidden" class="file_input_${idx + 1}" name="properties[Print_Type_${idx + 1}]" value="${(sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
-            });
-
-            // Update quantity
-            const $qtyInput = $mainForm.find('input[name="quantity"]');
-            if ($qtyInput.length) {
-                $qtyInput.val(saved.length);
-            } else {
-                $mainForm.append(`<input type="hidden" name="quantity" value="${saved.length}">`);
+            const groups = new Map();
+            const fallbackVariantId = getSelectedVariantIdFromDom();
+            for (const sheet of saved) {
+                const sheetVariantId = sheet?.format?.variantId || sheet?.options?.variantId || fallbackVariantId;
+                if (!sheetVariantId) { showToast('Variante fehlt', 'error'); return; }
+                const key = String(sheetVariantId);
+                const arr = groups.get(key) || [];
+                arr.push(sheet);
+                groups.set(key, arr);
             }
 
-            // Close modal and designer
-            $('#order-modal').addClass('hidden');
-            $('#nw-canvas').fadeOut(200);
-
-            // Trigger the main add to cart button
-            const $submitBtn = $mainForm.find('[type="submit"], [name="add"], .product-form__submit, .add-to-cart-btn').first();
-            if ($submitBtn.length) {
-                $submitBtn.click();
-            } else {
-                $mainForm.submit();
+            const $addBtn = $('#btn-add-to-cart');
+            const originalAddHtml = $addBtn.length ? $addBtn.html() : null;
+            if ($addBtn.length) {
+                $addBtn.prop('disabled', true);
+                $addBtn.html('<svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="white" stroke-width="4" fill="none" opacity="0.3"/><path d="M12 2 a10 10 0 0 1 10 10" stroke="white" stroke-width="4" fill="none"/></svg><span>In den Warenkorb…</span>');
+                lucide.createIcons();
             }
 
-            // Reset state
-            revokeAllPreviewUrls();
-            state.savedSheets = [];
-            state.items = [];
-            state.currentSheetIndex = null;
-            state.selectedItemId = null;
-            updateUI();
+            try {
+                const cartItemsComponents = document.querySelectorAll('cart-items-component');
+                const sectionIds = [];
+                cartItemsComponents.forEach((item) => {
+                    if (item instanceof HTMLElement && item.dataset.sectionId) sectionIds.push(item.dataset.sectionId);
+                });
+
+                const cartAddUrl = (typeof Theme !== 'undefined' && Theme?.routes?.cart_add_url) ? Theme.routes.cart_add_url : '/cart/add';
+                let lastSections = null;
+
+                for (const [variantId, sheets] of groups.entries()) {
+                    const formData = new FormData();
+                    formData.append('id', variantId);
+                    formData.append('quantity', String(sheets.length));
+                    if (sectionIds.length) formData.append('sections', sectionIds.join(','));
+                    formData.append('properties[_dtf_type]', 'canvas');
+                    formData.append('properties[_dtf_session_id]', sessionId);
+
+                    sheets.forEach((sheet, idx) => {
+                        formData.append(`properties[_Frame_${idx + 1}_Url]`, String(sheet.savedUrl || ''));
+                        formData.append(`properties[_Frame_${idx + 1}_Name]`, String(sheet.savedFileName || ''));
+                        formData.append(`properties[Print_Type_${idx + 1}]`, (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein');
+                        formData.append(`properties[Format_${idx + 1}]`, String(sheet.options?.formatName || sheet.format?.name || ''));
+                        formData.append(`properties[Frame ${idx + 1} Width]`, String(sheet.options?.exportWidth ?? sheet.format?.width ?? ''));
+                        formData.append(`properties[Frame ${idx + 1} Height]`, String(sheet.options?.exportHeight ?? sheet.format?.height ?? ''));
+                        formData.append(`properties[Frame ${idx + 1} FileId]`, String(sheet.fileId ?? ''));
+                    });
+
+                    const resp = await fetch(cartAddUrl, {
+                        method: 'POST',
+                        body: formData,
+                        headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'text/html' }
+                    });
+                    const data = await resp.json();
+                    if (data?.status) {
+                        showToast(data?.message || 'In den Warenkorb fehlgeschlagen', 'error');
+                        return;
+                    }
+                    lastSections = data?.sections || lastSections;
+                }
+
+                try {
+                    const cartResp = await fetch('/cart.js', { headers: { Accept: 'application/json' } });
+                    const cart = await cartResp.json();
+                    document.dispatchEvent(new CustomEvent('cart:update', {
+                        bubbles: true,
+                        detail: {
+                            resource: cart,
+                            sourceId: 'canvas-designer',
+                            data: {
+                                source: 'canvas-designer',
+                                itemCount: cart?.item_count ?? 0,
+                                sections: lastSections || undefined
+                            }
+                        }
+                    }));
+                } catch (_) {
+                    document.dispatchEvent(new CustomEvent('cart:update', {
+                        bubbles: true,
+                        detail: {
+                            resource: {},
+                            sourceId: 'canvas-designer',
+                            data: { source: 'canvas-designer', sections: lastSections || undefined }
+                        }
+                    }));
+                }
+
+                $('#order-modal').addClass('hidden');
+                $('#nw-canvas').fadeOut(200);
+
+                revokeAllPreviewUrls();
+                state.savedSheets = [];
+                state.items = [];
+                state.currentSheetIndex = null;
+                state.selectedItemId = null;
+                updateUI();
+            } finally {
+                if ($addBtn.length && originalAddHtml !== null) {
+                    $addBtn.prop('disabled', false);
+                    $addBtn.html(originalAddHtml);
+                    lucide.createIcons();
+                }
+            }
         });
 
         $(window).on('mousemove', (e) => {
@@ -1845,6 +2013,11 @@ $(document).ready(() => {
                 centerCanvas();
                 updateUI();
             }
+        });
+
+        document.addEventListener('variant:update', (event) => {
+            const variantId = event?.detail?.resource?.id;
+            if (variantId) applySelectedVariantToDesigner(String(variantId));
         });
 
         // Initialize: fallback for cases where canvas is directly visible
