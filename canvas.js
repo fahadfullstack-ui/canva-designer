@@ -1628,9 +1628,103 @@ $(document).ready(() => {
                 return rounded;
             };
 
+            const renderPdfPages = async (file) => {
+                const lib = window.pdfjsLib;
+                if (!lib?.getDocument) throw new Error('pdfjs_missing');
+                if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
+                    lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js';
+                }
+
+                const data = await file.arrayBuffer();
+                const doc = await lib.getDocument({ data }).promise;
+                const out = [];
+
+                for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+                    const page = await doc.getPage(pageNumber);
+                    const viewport1 = page.getViewport({ scale: 1 });
+
+                    const widthCm = (viewport1.width / 72) * 2.54;
+                    const heightCm = (viewport1.height / 72) * 2.54;
+
+                    const maxSidePx = 2400;
+                    const baseScale = 2;
+                    const largestAtBase = Math.max(viewport1.width, viewport1.height) * baseScale;
+                    const scale = largestAtBase > maxSidePx ? (maxSidePx / Math.max(viewport1.width, viewport1.height)) : baseScale;
+
+                    const viewport = page.getViewport({ scale });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.ceil(viewport.width);
+                    canvas.height = Math.ceil(viewport.height);
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) continue;
+
+                    await page.render({ canvasContext: ctx, viewport }).promise;
+
+                    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+                    if (!blob) continue;
+                    const url = URL.createObjectURL(blob);
+                    trackPreviewUrl(url);
+
+                    out.push({
+                        pageNumber,
+                        src: url,
+                        widthCm,
+                        heightCm,
+                        aspectRatio: widthCm / heightCm
+                    });
+                }
+
+                if (typeof doc.destroy === 'function') doc.destroy();
+                return out;
+            };
+
             for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
                 const file = files[fileIndex];
                 const ext = file.name.split('.').pop().toLowerCase();
+                if (ext === 'pdf') {
+                    try {
+                        const pages = await renderPdfPages(file);
+                        for (const p of pages) {
+                            const groupId = generateId('grp');
+                            const maxW = state.selectedFormat.width * 0.8;
+                            const maxH = state.selectedFormat.height * 0.8;
+                            let fitW = p.widthCm, fitH = p.heightCm;
+                            if (fitW > maxW || fitH > maxH) {
+                                const scale = Math.min(maxW / fitW, maxH / fitH);
+                                fitW = fitW * scale;
+                                fitH = fitH * scale;
+                            }
+                            const startX = (state.selectedFormat.width - fitW) / 2;
+                            const startY = (state.selectedFormat.height - fitH) / 2;
+
+                            newUploadedItems.push({
+                                id: generateId('upload'),
+                                groupId,
+                                name: `${file.name} (Seite ${p.pageNumber})`,
+                                type: ext,
+                                x: startX,
+                                y: startY,
+                                rotation: 0,
+                                originalDpi: FALLBACK_DPI,
+                                detected: true,
+                                quantity: 1,
+                                src: p.src,
+                                originalWidth: p.widthCm,
+                                originalHeight: p.heightCm,
+                                width: fitW,
+                                height: fitH,
+                                aspectRatio: p.aspectRatio,
+                                isPreviewable: true
+                            });
+                        }
+                    } catch (_) {
+                        showToast('PDF konnte nicht verarbeitet werden', 'error');
+                    }
+
+                    $('#upload-label').text(`${fileIndex + 1}/${files.length} verarbeitet...`);
+                    continue;
+                }
+
                 const isImage = ['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext);
                 let detectedDpi = isImage ? await detectImageDPI(file) : null;
                 const finalDpi = normalizeDpi(detectedDpi);
