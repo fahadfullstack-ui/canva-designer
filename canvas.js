@@ -1271,7 +1271,7 @@ $(document).ready(() => {
         const scaleX = (viewportW - padding * 2) / sheetW;
         const scaleY = (viewportH - padding * 2) / sheetH;
         state.zoom = Math.min(scaleX, scaleY, 1); // Don't zoom above 100%
-        state.zoom = Math.max(0.1, Math.min(5, state.zoom)); // Clamp to valid range
+        state.zoom = Math.max(0.1, Math.min(10, state.zoom)); // Clamp to valid range
         centerCanvas();
     };
 
@@ -1286,6 +1286,31 @@ $(document).ready(() => {
         // Center the canvas in the viewport
         state.panX = (viewportW - sheetW) / 2;
         state.panY = (viewportH - sheetH) / 2;
+    };
+
+    const clampPanToViewport = () => {
+        const $viewport = $('#pan-viewport');
+        if (!$viewport.length) return;
+        const viewportW = $viewport.width();
+        const viewportH = $viewport.height();
+        const sheetW = cmToPx(state.selectedFormat.width) * state.zoom;
+        const sheetH = cmToPx(state.selectedFormat.height) * state.zoom;
+        const padding = 40;
+
+        let minX = viewportW - sheetW - padding;
+        let maxX = padding;
+        let minY = viewportH - sheetH - padding;
+        let maxY = padding;
+
+        if (sheetW + padding * 2 <= viewportW) {
+            minX = maxX = (viewportW - sheetW) / 2;
+        }
+        if (sheetH + padding * 2 <= viewportH) {
+            minY = maxY = (viewportH - sheetH) / 2;
+        }
+
+        state.panX = Math.min(maxX, Math.max(minX, state.panX));
+        state.panY = Math.min(maxY, Math.max(minY, state.panY));
     };
 
     let interactionDomUpdatePending = false;
@@ -1560,8 +1585,16 @@ $(document).ready(() => {
         autoScale();
         updateUI();
 
-        $('#zoom-in').on('click', () => { state.zoom = Math.min(2, state.zoom + 0.1); centerCanvas(); updateUI(); });
-        $('#zoom-out').on('click', () => { state.zoom = Math.max(0.1, state.zoom - 0.1); centerCanvas(); updateUI(); });
+        $('#zoom-in').on('click', () => {
+            state.zoom = Math.min(10, state.zoom + 0.05);
+            clampPanToViewport();
+            updateUI();
+        });
+        $('#zoom-out').on('click', () => {
+            state.zoom = Math.max(0.1, state.zoom - 0.05);
+            clampPanToViewport();
+            updateUI();
+        });
 
         $('#reset-all').on('click', () => {
             if (confirm('Alles löschen?')) { revokeAllPreviewUrls(); state.items = []; state.savedSheets = []; state.selectedItemId = null; updateUI(); }
@@ -1587,14 +1620,22 @@ $(document).ready(() => {
             // Show loading
             $('#upload-label').text('Verarbeite...');
 
+            const normalizeDpi = (dpi) => {
+                const n = Number(dpi);
+                if (!Number.isFinite(n)) return FALLBACK_DPI;
+                const rounded = Math.round(n);
+                if (rounded < 150 || rounded > 1200) return FALLBACK_DPI;
+                return rounded;
+            };
+
             for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
                 const file = files[fileIndex];
                 const ext = file.name.split('.').pop().toLowerCase();
                 const isImage = ['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext);
                 let detectedDpi = isImage ? await detectImageDPI(file) : null;
-                const finalDpi = detectedDpi || FALLBACK_DPI;
+                const finalDpi = normalizeDpi(detectedDpi);
                 const groupId = generateId('grp');
-                const baseItem = { id: generateId('upload'), groupId, name: file.name, type: ext, x: 0, y: 0, rotation: 0, originalDpi: finalDpi, detected: !!detectedDpi, quantity: 1 };
+                const baseItem = { id: generateId('upload'), groupId, name: file.name, type: ext, x: 0, y: 0, rotation: 0, originalDpi: finalDpi, detected: detectedDpi !== null && detectedDpi !== undefined, quantity: 1 };
 
                 if (isImage) {
                     // Use compression for large images
@@ -1912,13 +1953,25 @@ $(document).ready(() => {
 
         // Mouse wheel zoom (Ctrl+wheel only)
         $('#pan-viewport').on('wheel', (e) => {
-            if (!e.originalEvent.ctrlKey) return;
+            if (!e.originalEvent.ctrlKey && !e.originalEvent.metaKey) return;
             e.preventDefault();
-            const zoomDelta = e.originalEvent.deltaY > 0 ? -0.1 : 0.1;
-            const newZoom = Math.max(0.1, Math.min(5, state.zoom + zoomDelta));
-            if (newZoom === state.zoom) return;
+            const $viewport = $('#pan-viewport');
+            const rect = $viewport[0].getBoundingClientRect();
+            const mouseX = e.originalEvent.clientX - rect.left;
+            const mouseY = e.originalEvent.clientY - rect.top;
+
+            const oldZoom = state.zoom;
+            const factor = Math.pow(1.0015, -e.originalEvent.deltaY);
+            const newZoom = Math.max(0.1, Math.min(10, oldZoom * factor));
+            if (Math.abs(newZoom - oldZoom) < 0.0001) return;
+
+            const canvasX = (mouseX - state.panX) / oldZoom;
+            const canvasY = (mouseY - state.panY) / oldZoom;
+
             state.zoom = newZoom;
-            centerCanvas();
+            state.panX = mouseX - canvasX * newZoom;
+            state.panY = mouseY - canvasY * newZoom;
+            clampPanToViewport();
             updateUI();
         });
 
@@ -1948,6 +2001,7 @@ $(document).ready(() => {
                 const dy = e.clientY - state.panStartY;
                 state.panX = state.panStartPanX + dx;
                 state.panY = state.panStartPanY + dy;
+                clampPanToViewport();
                 $('#pan-layer').css('transform', `translate(${state.panX}px, ${state.panY}px)`);
             }
         });
