@@ -414,6 +414,151 @@ $(document).ready(() => {
         const file = new File([blob], fileName, { type: 'image/png' });
         return { file, fileName, usedBox, dpi };
     };
+    const upsertCurrentSheetToMemory = () => {
+        if (state.currentSheetIndex !== null) {
+            const sheet = state.savedSheets[state.currentSheetIndex];
+            if (!sheet) return;
+            sheet.items = [...state.items];
+            sheet.format = state.selectedFormat;
+            sheet.price = state.selectedFormat.price;
+            sheet.options = sheet.options ? { ...sheet.options } : {};
+            sheet.options.formatId = state.selectedFormat.id;
+            sheet.options.formatName = state.selectedFormat.name;
+            sheet.options.variantId = state.selectedFormat.variantId || getSelectedVariantIdFromDom();
+            sheet.options.width = state.selectedFormat.width;
+            sheet.options.height = state.selectedFormat.height;
+            sheet.options.printSmallElements = state.printSmallElements;
+            return;
+        }
+        if (!state.items.length) return;
+        const sheet = {
+            id: Date.now(),
+            format: state.selectedFormat,
+            items: [...state.items],
+            price: state.selectedFormat.price,
+            options: {
+                formatId: state.selectedFormat.id,
+                formatName: state.selectedFormat.name,
+                variantId: state.selectedFormat.variantId || getSelectedVariantIdFromDom(),
+                width: state.selectedFormat.width,
+                height: state.selectedFormat.height,
+                printSmallElements: state.printSmallElements
+            }
+        };
+        state.savedSheets.push(sheet);
+        state.currentSheetIndex = state.savedSheets.length - 1;
+    };
+
+    const rebuildSheetFormInputs = (sheetIndex, sheet) => {
+        const $form = $('.shopify-product-form');
+        if (!$form.length) return;
+
+        $form.find(`.file_input_${sheetIndex}`).remove();
+        $form.find(`.print_type_${sheetIndex}`).remove();
+
+        const w = sheet?.options?.exportWidth ?? sheet?.format?.width;
+        const h = sheet?.options?.exportHeight ?? sheet?.format?.height;
+        const url = sheet?.savedUrl || '';
+        const name = sheet?.savedFileName || '';
+
+        if (w != null) $form.append(`<input type="hidden" class="file_input_${sheetIndex}" name="properties[Width_${sheetIndex}]" value="${w}" />`);
+        if (h != null) $form.append(`<input type="hidden" class="file_input_${sheetIndex}" name="properties[Height_${sheetIndex}]" value="${h}" />`);
+        if (url) $form.append(`<input type="hidden" class="file_input_${sheetIndex}" name="properties[_File_${sheetIndex}]" value="${url}" />`);
+        if (name) $form.append(`<input type="hidden" class="file_input_${sheetIndex}" name="properties[_dtf_file_name_${sheetIndex}]" value="${name}" />`);
+        $form.append(`<input type="hidden" class="print_type_${sheetIndex}" name="properties[Print_Type_${sheetIndex}]" value="${(sheet?.options?.printSmallElements ?? true) ? 'Ja' : 'Nein'}">`);
+    };
+
+    const getOverlappingItemIds = (items) => {
+        const ids = new Set();
+        const rects = (items || []).map(item => {
+            const isRotated = (item.rotation || 0) % 180 !== 0;
+            let x = item.x, y = item.y, w = item.width, h = item.height;
+            if (isRotated) {
+                x = item.x + (item.width - item.height) / 2;
+                y = item.y + (item.height - item.width) / 2;
+                w = item.height;
+                h = item.width;
+            }
+            return { id: item.id, x, y, w, h };
+        });
+        for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+                const r1 = rects[i], r2 = rects[j];
+                const overlap = !(r2.x >= r1.x + r1.w - 0.01 || r2.x + r2.w <= r1.x + 0.01 || r2.y >= r1.y + r1.h - 0.01 || r2.y + r2.h <= r1.y + 0.01);
+                if (overlap) { ids.add(r1.id); ids.add(r2.id); }
+            }
+        }
+        return Array.from(ids);
+    };
+
+    const saveAllSheets = async () => {
+        upsertCurrentSheetToMemory();
+
+        const $form = $('.shopify-product-form');
+        if ($form.length) {
+            $form.find('input').filter((_, el) => {
+                if (!(el instanceof HTMLInputElement)) return false;
+                return Array.from(el.classList).some(c => c.startsWith('file_input_') || c.startsWith('print_type_'));
+            }).remove();
+        }
+
+        for (let index = 0; index < state.savedSheets.length; index++) {
+            const sheet = state.savedSheets[index];
+            if (!sheet?.items?.length) continue;
+
+            const overlapping = getOverlappingItemIds(sheet.items);
+            if (overlapping.length) {
+                showToast(`Überlappungen in Bogen ${index + 1}`, 'error');
+                throw new Error('overlap');
+            }
+
+            const formatName = sheet?.options?.formatName ?? sheet?.format?.name ?? '';
+            const printSmallElements = sheet?.options?.printSmallElements ?? state.printSmallElements;
+            const hash = getSheetHash(sheet.items, sheet.format, { printSmallElements, formatName });
+            const isAlreadySaved = !!sheet.savedUrl && sheet.lastSavedHash === hash && !!sheet.savedFileName;
+
+            if (!isAlreadySaved) {
+                const { file, fileName, usedBox } = await renderSheetToImage(sheet, { dpi: EXPORT_DPI, trimToUsedArea: true });
+                let uploadRes = null;
+                try {
+                    uploadRes = await newUploadFile(file, index + 1, { widthCm: usedBox.width, heightCm: usedBox.height, dpi: EXPORT_DPI });
+                } catch (_) {
+                    uploadRes = null;
+                }
+
+                let tempUrl = null;
+                let fileId = null;
+                let savedFileName = fileName;
+                if (uploadRes && uploadRes.tempUrl) {
+                    tempUrl = uploadRes.tempUrl;
+                    fileId = uploadRes.fileId || null;
+                    if (uploadRes.fileName) savedFileName = uploadRes.fileName;
+                } else {
+                    tempUrl = URL.createObjectURL(file);
+                    trackPreviewUrl(tempUrl);
+                }
+
+                sheet.savedUrl = tempUrl;
+                sheet.savedFileName = savedFileName;
+                sheet.fileId = fileId;
+                sheet.lastSavedHash = hash;
+                sheet.options = {
+                    ...(sheet.options || {}),
+                    formatId: sheet.format?.id ?? null,
+                    formatName: sheet.format?.name ?? formatName,
+                    variantId: sheet.format?.variantId || getSelectedVariantIdFromDom(),
+                    width: sheet.format?.width,
+                    height: sheet.format?.height,
+                    printSmallElements,
+                    exportWidth: usedBox.width,
+                    exportHeight: usedBox.height
+                };
+            }
+
+            rebuildSheetFormInputs(index + 1, sheet);
+        }
+    };
+
     const saveCurrentSheet = async () => {
         let sheet = null;
         if (state.currentSheetIndex !== null) {
@@ -469,15 +614,32 @@ $(document).ready(() => {
         //     $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Width]" value="${sheet.format.width}">`);
         //     $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Height]" value="${sheet.format.height}">`);
         //     $form.append(`<input type="hidden" name="properties[Frame ${idx + 1} Format]" value="${sheet.options.formatName}">`);
+            $form.find(`.print_type_${idx}`).remove();
             $form.append(`<input type="hidden" class="print_type_${idx}" name="properties[Print_Type_${idx}]" value="${sheet.options.printSmallElements ? 'Ja' : 'Nein'}">`);
         }
         return sheet;
     };
     const showToast = (text, type = 'success') => {
-        const bg = type === 'error' ? 'bg-red-600' : type === 'info' ? 'bg-slate-700' : 'bg-green-600';
-        const $toast = $(`<div class="fixed top-4 right-4 z-[999999] ${bg} text-white px-4 py-2 rounded-lg shadow-lg">${text}</div>`);
+        const bg = type === 'error' ? 'bg-red-600' : type === 'info' ? 'bg-slate-800' : 'bg-emerald-600';
+        const icon = type === 'error' ? 'alert-triangle' : type === 'info' ? 'info' : 'check-circle-2';
+        const $toast = $(`
+            <div class="fixed top-4 right-4 z-[999999] ${bg} text-white px-4 py-3 rounded-xl shadow-xl ring-1 ring-white/20 flex items-start gap-3 max-w-[360px] animate-modal-in">
+                <div class="mt-0.5 shrink-0">
+                    <i data-lucide="${icon}" class="size-5"></i>
+                </div>
+                <div class="text-sm font-semibold leading-snug break-words">${text}</div>
+            </div>
+        `);
         $('body').append($toast);
+        lucide.createIcons();
         setTimeout(() => { $toast.fadeOut(200, () => $toast.remove()); }, 2000);
+    };
+    const setLeftUploadStatus = (visible, title, sub) => {
+        const $box = $('#left-upload-status');
+        if (!$box.length) return;
+        $box.toggleClass('hidden', !visible);
+        if (typeof title === 'string') $('#left-upload-status-title').text(title);
+        if (typeof sub === 'string') $('#left-upload-status-sub').text(sub);
     };
     const isCurrentSheetDirty = () => {
         if (state.currentSheetIndex === null) return state.items.length > 0;
@@ -498,8 +660,7 @@ $(document).ready(() => {
         pendingGuardNext = null;
     };
     const guardUnsavedChanges = (next) => {
-        if (!isCurrentSheetDirty()) { next(); return; }
-        openUnsavedModal(next);
+        next();
     };
 
     const compressImage = (file, maxSide = 1600, quality = 0.82) => {
@@ -958,12 +1119,11 @@ $(document).ready(() => {
                         ${isNewSheet && state.items.length > 0 ? `<span class="text-xs text-green-200">(${state.items.length})</span>` : ''}
                     </div>
                 `).on('click', () => {
-            guardUnsavedChanges(() => {
-                state.currentSheetIndex = null;
-                state.items = [];
-                state.selectedItemId = null;
-                updateUI();
-            });
+            upsertCurrentSheetToMemory();
+            state.currentSheetIndex = null;
+            state.items = [];
+            state.selectedItemId = null;
+            updateUI();
         });
         $tabs.append($newTab);
 
@@ -994,15 +1154,15 @@ $(document).ready(() => {
 
     // Switch to a saved sheet for editing
     const switchToSheet = (index) => {
-        guardUnsavedChanges(() => {
-            state.currentSheetIndex = index;
-            const sheet = state.savedSheets[index];
-            state.items = [...sheet.items];
-            state.selectedFormat = sheet.format;
-            state.selectedItemId = null;
-            state.originalSheetSnapshot = { items: JSON.parse(JSON.stringify(sheet.items)), format: { ...sheet.format } };
-            updateUI();
-        });
+        upsertCurrentSheetToMemory();
+        state.currentSheetIndex = index;
+        const sheet = state.savedSheets[index];
+        state.items = [...sheet.items];
+        state.selectedFormat = sheet.format;
+        state.printSmallElements = sheet.options?.printSmallElements ?? state.printSmallElements;
+        state.selectedItemId = null;
+        state.originalSheetSnapshot = { items: JSON.parse(JSON.stringify(sheet.items)), format: { ...sheet.format } };
+        updateUI();
     };
 
     // Open the Order Modal with all projects
@@ -1035,7 +1195,7 @@ $(document).ready(() => {
 
             setLoading(true);
             try {
-                await saveCurrentSheet();
+                await saveAllSheets();
             } catch (_) {
                 showToast('Speichern fehlgeschlagen', 'error');
                 setLoading(false);
@@ -1632,11 +1792,25 @@ $(document).ready(() => {
                 const lib = window.pdfjsLib;
                 if (!lib?.getDocument) throw new Error('pdfjs_missing');
                 if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
-                    lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js';
+                    lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
                 }
 
                 const data = await file.arrayBuffer();
-                const doc = await lib.getDocument({ data }).promise;
+                const withTimeout = (promise, ms) => Promise.race([
+                    promise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('pdf_timeout')), ms))
+                ]);
+
+                let doc = null;
+                try {
+                    doc = await withTimeout(lib.getDocument({ data }).promise, 15000);
+                } catch (e) {
+                    try {
+                        doc = await withTimeout(lib.getDocument({ data, disableWorker: true }).promise, 20000);
+                    } catch (_) {
+                        throw e;
+                    }
+                }
                 const out = [];
 
                 for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
@@ -1683,8 +1857,15 @@ $(document).ready(() => {
                 const ext = file.name.split('.').pop().toLowerCase();
                 if (ext === 'pdf') {
                     try {
+                        setLeftUploadStatus(true, 'PDF wird verarbeitet…', file.name);
+                        $('#file-input').prop('disabled', true);
                         const pages = await renderPdfPages(file);
+                        if (!pages.length) {
+                            showToast('PDF hat keine Seiten', 'error');
+                        }
+                        setLeftUploadStatus(true, 'PDF wird verarbeitet…', `${file.name} (${pages.length} Seiten)`);
                         for (const p of pages) {
+                            setLeftUploadStatus(true, 'PDF wird verarbeitet…', `${file.name} – Seite ${p.pageNumber}/${pages.length}`);
                             const groupId = generateId('grp');
                             const maxW = state.selectedFormat.width * 0.8;
                             const maxH = state.selectedFormat.height * 0.8;
@@ -1717,8 +1898,14 @@ $(document).ready(() => {
                                 isPreviewable: true
                             });
                         }
-                    } catch (_) {
-                        showToast('PDF konnte nicht verarbeitet werden', 'error');
+                    } catch (e) {
+                        const msg = String(e?.message || '');
+                        if (msg.includes('pdfjs_missing')) showToast('PDF Library fehlt', 'error');
+                        else if (msg.includes('pdf_timeout')) showToast('PDF dauert zu lange', 'error');
+                        else showToast('PDF konnte nicht verarbeitet werden', 'error');
+                    } finally {
+                        setLeftUploadStatus(false);
+                        $('#file-input').prop('disabled', false);
                     }
 
                     $('#upload-label').text(`${fileIndex + 1}/${files.length} verarbeitet...`);
@@ -1868,12 +2055,11 @@ $(document).ready(() => {
 
         $('#btn-add-sheet').on('click', () => {
             if (state.collidingIds.length) { showToast('Überlappungen beheben!', 'error'); return; }
-            guardUnsavedChanges(() => {
-                state.currentSheetIndex = null;
-                state.items = [];
-                state.selectedItemId = null;
-                updateUI();
-            });
+            upsertCurrentSheetToMemory();
+            state.currentSheetIndex = null;
+            state.items = [];
+            state.selectedItemId = null;
+            updateUI();
         });
 
         $('#btn-checkout').on('click', () => {
@@ -1887,17 +2073,6 @@ $(document).ready(() => {
         $('#btn-add-to-cart').on('click', async () => {
             const saved = state.savedSheets.filter(s => !!s.savedUrl);
             if (!saved.length) { showToast('Keine gespeicherten Bögen', 'info'); return; }
-
-            const groups = new Map();
-            const fallbackVariantId = getSelectedVariantIdFromDom();
-            for (const sheet of saved) {
-                const sheetVariantId = sheet?.format?.variantId || sheet?.options?.variantId || fallbackVariantId;
-                if (!sheetVariantId) { showToast('Variante fehlt', 'error'); return; }
-                const key = String(sheetVariantId);
-                const arr = groups.get(key) || [];
-                arr.push(sheet);
-                groups.set(key, arr);
-            }
 
             const $addBtn = $('#btn-add-to-cart');
             const originalAddHtml = $addBtn.length ? $addBtn.html() : null;
@@ -1917,23 +2092,24 @@ $(document).ready(() => {
                 const cartAddUrl = (typeof Theme !== 'undefined' && Theme?.routes?.cart_add_url) ? Theme.routes.cart_add_url : '/cart/add';
                 let lastSections = null;
 
-                for (const [variantId, sheets] of groups.entries()) {
+                const fallbackVariantId = getSelectedVariantIdFromDom();
+                for (let i = 0; i < saved.length; i++) {
+                    const sheet = saved[i];
+                    const variantId = String(sheet?.format?.variantId || sheet?.options?.variantId || fallbackVariantId || '');
+                    if (!variantId) { showToast('Variante fehlt', 'error'); return; }
+
                     const formData = new FormData();
                     formData.append('id', variantId);
-                    formData.append('quantity', String(sheets.length));
+                    formData.append('quantity', '1');
                     if (sectionIds.length) formData.append('sections', sectionIds.join(','));
                     formData.append('properties[_dtf_type]', 'canvas');
                     formData.append('properties[_dtf_session_id]', sessionId);
-
-                    sheets.forEach((sheet, idx) => {
-                        formData.append(`properties[_Frame_${idx + 1}_Url]`, String(sheet.savedUrl || ''));
-                        formData.append(`properties[_Frame_${idx + 1}_Name]`, String(sheet.savedFileName || ''));
-                        formData.append(`properties[Print_Type_${idx + 1}]`, (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein');
-                        formData.append(`properties[Format_${idx + 1}]`, String(sheet.options?.formatName || sheet.format?.name || ''));
-                        formData.append(`properties[Frame ${idx + 1} Width]`, String(sheet.options?.exportWidth ?? sheet.format?.width ?? ''));
-                        formData.append(`properties[Frame ${idx + 1} Height]`, String(sheet.options?.exportHeight ?? sheet.format?.height ?? ''));
-                        formData.append(`properties[Frame ${idx + 1} FileId]`, String(sheet.fileId ?? ''));
-                    });
+                    formData.append('properties[_dtf_sheet_id]', String(sheet.id ?? i + 1));
+                    formData.append('properties[File Url]', String(sheet.savedUrl || ''));
+                    formData.append('properties[File Name]', String(sheet.savedFileName || ''));
+                    formData.append('properties[Print Type]', (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein');
+                    formData.append('properties[Width]', String(sheet.options?.exportWidth ?? sheet.format?.width ?? 0));
+                    formData.append('properties[Height]', String(sheet.options?.exportHeight ?? sheet.format?.height ?? 0));
 
                     const resp = await fetch(cartAddUrl, {
                         method: 'POST',
