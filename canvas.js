@@ -8,13 +8,59 @@ $(document).ready(() => {
     const canvas = $('#nw-canvas');
     $('body').prepend(canvas);
 
-    $("#nw-canvas-trg").on('click', function () {
+    let bodyScrollLocked = false;
+    let bodyScrollY = 0;
+    const prevBodyStyle = { overflow: '', position: '', top: '', width: '', paddingRight: '' };
+    const prevHtmlStyle = { overflow: '' };
+    const lockBodyScroll = () => {
+        if (bodyScrollLocked) return;
+        bodyScrollLocked = true;
+        const body = document.body;
+        const html = document.documentElement;
+        bodyScrollY = window.scrollY || 0;
+        prevBodyStyle.overflow = body.style.overflow;
+        prevBodyStyle.position = body.style.position;
+        prevBodyStyle.top = body.style.top;
+        prevBodyStyle.width = body.style.width;
+        prevBodyStyle.paddingRight = body.style.paddingRight;
+        prevHtmlStyle.overflow = html.style.overflow;
+        const scrollbarWidth = window.innerWidth - html.clientWidth;
+        html.style.overflow = 'hidden';
+        body.style.overflow = 'hidden';
+        body.style.position = 'fixed';
+        body.style.top = `-${bodyScrollY}px`;
+        body.style.width = '100%';
+        if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
+    };
+    const unlockBodyScroll = () => {
+        if (!bodyScrollLocked) return;
+        bodyScrollLocked = false;
+        const body = document.body;
+        const html = document.documentElement;
+        html.style.overflow = prevHtmlStyle.overflow;
+        body.style.overflow = prevBodyStyle.overflow;
+        body.style.position = prevBodyStyle.position;
+        body.style.top = prevBodyStyle.top;
+        body.style.width = prevBodyStyle.width;
+        body.style.paddingRight = prevBodyStyle.paddingRight;
+        window.scrollTo(0, bodyScrollY);
+    };
+    const showCanvas = () => {
+        lockBodyScroll();
         $('#nw-canvas').fadeIn(200, function () {
-            // Center canvas after it becomes visible and has dimensions
             autoScale();
             updateUI();
         });
-    })
+    };
+    const hideCanvas = () => {
+        $('#nw-canvas').fadeOut(200, function () {
+            unlockBodyScroll();
+        });
+    };
+
+    $("#nw-canvas-trg").on('click', function () {
+        showCanvas();
+    });
 
     /**
      * APP STATE & CONSTANTS
@@ -634,6 +680,10 @@ $(document).ready(() => {
         lucide.createIcons();
         setTimeout(() => { $toast.fadeOut(200, () => $toast.remove()); }, 2000);
     };
+    const formatFixed2 = (value) => {
+        const n = Number(value);
+        return (Number.isFinite(n) ? n : 0).toFixed(2);
+    };
     const setLeftUploadStatus = (visible, title, sub) => {
         const $box = $('#left-upload-status');
         if (!$box.length) return;
@@ -1145,7 +1195,7 @@ $(document).ready(() => {
                             <i data-lucide="x" class="size-6"></i>
                         </button>
                     `).on('click', () => {
-            $('#nw-canvas').fadeOut(200);
+            hideCanvas();
         });
         $tabs.append($closeBtn);
 
@@ -1747,12 +1797,10 @@ $(document).ready(() => {
 
         $('#zoom-in').on('click', () => {
             state.zoom = Math.min(10, state.zoom + 0.05);
-            clampPanToViewport();
             updateUI();
         });
         $('#zoom-out').on('click', () => {
             state.zoom = Math.max(0.1, state.zoom - 0.05);
-            clampPanToViewport();
             updateUI();
         });
 
@@ -2105,11 +2153,11 @@ $(document).ready(() => {
                     formData.append('properties[_dtf_type]', 'canvas');
                     formData.append('properties[_dtf_session_id]', sessionId);
                     formData.append('properties[_dtf_sheet_id]', String(sheet.id ?? i + 1));
-                    formData.append('properties[File Url]', String(sheet.savedUrl || ''));
+                    formData.append('properties[_File_Url]', String(sheet.savedUrl || ''));
                     formData.append('properties[File Name]', String(sheet.savedFileName || ''));
                     formData.append('properties[Print Type]', (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein');
-                    formData.append('properties[Width]', String(sheet.options?.exportWidth ?? sheet.format?.width ?? 0));
-                    formData.append('properties[Height]', String(sheet.options?.exportHeight ?? sheet.format?.height ?? 0));
+                    formData.append('properties[Width]', formatFixed2(sheet.options?.exportWidth ?? sheet.format?.width ?? 0));
+                    formData.append('properties[Height]', formatFixed2(sheet.options?.exportHeight ?? sheet.format?.height ?? 0));
 
                     const resp = await fetch(cartAddUrl, {
                         method: 'POST',
@@ -2151,7 +2199,7 @@ $(document).ready(() => {
                 }
 
                 $('#order-modal').addClass('hidden');
-                $('#nw-canvas').fadeOut(200);
+                hideCanvas();
 
                 revokeAllPreviewUrls();
                 state.savedSheets = [];
@@ -2241,18 +2289,22 @@ $(document).ready(() => {
             state.zoom = newZoom;
             state.panX = mouseX - canvasX * newZoom;
             state.panY = mouseY - canvasY * newZoom;
-            clampPanToViewport();
             updateUI();
         });
 
         // Pan with mouse drag (hand tool)
         $('#pan-viewport').on('mousedown', (e) => {
-            if (!(state.isSpaceDown || e.button === 1)) return;
-            // Only pan if clicking on empty space, not on items or handles
             const $target = $(e.target);
-            if ($target.closest('#items-layer').length &&
-                ($target.closest('.canvas-item').length || $target.closest('.item-handle').length)) {
-                return; // Let item interaction handle this
+            if ($target.closest('#zoom-in, #zoom-out, #zoom-label').length) return;
+
+            const isLeft = e.button === 0;
+            const isMiddle = e.button === 1;
+            if (!(state.isSpaceDown || isMiddle || isLeft)) return;
+            if (!state.isSpaceDown) {
+                if ($target.closest('#items-layer').length &&
+                    ($target.closest('.canvas-item').length || $target.closest('.item-handle').length)) {
+                    return;
+                }
             }
 
             // Start panning
@@ -2262,6 +2314,7 @@ $(document).ready(() => {
             state.panStartPanX = state.panX;
             state.panStartPanY = state.panY;
             $('#pan-viewport').css('cursor', 'grabbing');
+            document.body.style.userSelect = 'none';
             e.preventDefault();
         });
 
@@ -2271,7 +2324,6 @@ $(document).ready(() => {
                 const dy = e.clientY - state.panStartY;
                 state.panX = state.panStartPanX + dx;
                 state.panY = state.panStartPanY + dy;
-                clampPanToViewport();
                 $('#pan-layer').css('transform', `translate(${state.panX}px, ${state.panY}px)`);
             }
         });
@@ -2280,6 +2332,7 @@ $(document).ready(() => {
             if (state.isPanning) {
                 state.isPanning = false;
                 $('#pan-viewport').css('cursor', 'grab');
+                document.body.style.userSelect = '';
             }
         });
 
