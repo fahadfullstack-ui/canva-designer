@@ -334,7 +334,7 @@ $(document).ready(() => {
         return new Blob([out], { type: 'image/png' });
     };
     const DTF_UPLOAD_URL = 'https://dtfworld.hamzadeveloper.com/api/dtf-world/upload';
-    async function uploadFile(file, productId, dimensions, sessionId, index) {
+    async function uploadFile(file, productId, dimensions, sessionId, index,wCm,hCm) {
         let visualProgress = 0;
         const smoothUpdate = (target) => {
             visualProgress += (target - visualProgress) * 0.18;
@@ -354,6 +354,8 @@ $(document).ready(() => {
         formData.append('session_id', String(sessionId || ''));
         formData.append('product_id', String(productId || ''));
         formData.append('dimensions', String(dimensions || ''));
+        formData.append('widthCm', wCm);
+        formData.append('heightCm', hCm);
 
         const res = await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
@@ -389,7 +391,7 @@ $(document).ready(() => {
         const wCm = dimensionsOverride?.widthCm ?? state.selectedFormat.width;
         const hCm = dimensionsOverride?.heightCm ?? state.selectedFormat.height;
         const dimsString = `${Number(wCm).toFixed(2)} cm x ${Number(hCm).toFixed(2)} cm`;
-        const raw = await uploadFile(file, productId, dimsString, sessionId, id);
+        const raw = await uploadFile(file, productId, dimsString, sessionId, id,wCm,hCm);
         const res = raw?.data ? raw.data : raw;
         if (res) {
             if (typeof window.UpdateFileMeta === 'function') {
@@ -2224,13 +2226,13 @@ $(document).ready(() => {
                     const formData = new FormData();
                     formData.append('id', variantId);
                     formData.append('quantity', String(qty));
-                    formData.append(`_dtf_file_quantity_${idx}`, String(qty));
+                    formData.append(`properties[_dtf_file_quantity_${idx}]`, String(qty));
                     if (sectionIds.length) formData.append('sections', sectionIds.join(','));
                     formData.append(`properties[File Type]`, 'Effect');
                     formData.append(`properties[_dtf_type]`, 'canvas');
                     formData.append(`properties[_dtf_session_id]`, sessionId);
                     // formData.append(`properties[_dtf_sheet_id]`, String(sheet.id ?? i + 1));
-                    formData.append(`properties[St]`, String(qty));
+                    // formData.append(`properties[St]`, String(qty));
                     formData.append(`properties[_File_${idx}]`, String(sheet.savedUrl || ''));
                     formData.append(`properties[_dtf_file_name_${idx}]`, String(sheet.savedFileName || ''));
                     formData.append(`properties[Print_Type_${idx}]`, (sheet.options?.printSmallElements ?? true) ? 'Ja' : 'Nein');
