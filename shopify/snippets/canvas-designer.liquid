@@ -48,8 +48,8 @@
     /* Resize Handles - Canva-style large handles */
     .item-handle {
         position: absolute;
-        width: 28px;
-        height: 28px;
+        width: 48px;
+        height: 48px;
         background: white;
         border: 4px solid #4f46e5;
         border-radius: 50%;
@@ -57,17 +57,17 @@
         transition: opacity 0.15s;
         z-index: 25;
         pointer-events: all;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.5);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(255, 255, 255, 0.6);
     }
 
     /* Expanded hit area using pseudo-element */
     .item-handle::before {
         content: '';
         position: absolute;
-        top: -10px;
-        left: -10px;
-        right: -10px;
-        bottom: -10px;
+        top: -40px;
+        left: -40px;
+        right: -40px;
+        bottom: -40px;
         border-radius: 50%;
     }
 
@@ -83,26 +83,26 @@
 
     /* Corner handles - positioned outside item bounds */
     .handle-nw {
-        top: -14px;
-        left: -14px;
+        top: -24px;
+        left: -24px;
         cursor: nwse-resize;
     }
 
     .handle-ne {
-        top: -14px;
-        right: -14px;
+        top: -24px;
+        right: -24px;
         cursor: nesw-resize;
     }
 
     .handle-sw {
-        bottom: -14px;
-        left: -14px;
+        bottom: -24px;
+        left: -24px;
         cursor: nesw-resize;
     }
 
     .handle-se {
-        bottom: -14px;
-        right: -14px;
+        bottom: -24px;
+        right: -24px;
         cursor: nwse-resize;
     }
 
@@ -111,12 +111,12 @@
     .handle-s,
     .handle-e,
     .handle-w {
-        width: 22px;
-        height: 22px;
+        width: 36px;
+        height: 36px;
     }
 
     .handle-n {
-        top: -11px;
+        top: -18px;
         left: 50%;
         transform: translateX(-50%);
         cursor: ns-resize;
@@ -127,7 +127,7 @@
     }
 
     .handle-s {
-        bottom: -11px;
+        bottom: -18px;
         left: 50%;
         transform: translateX(-50%);
         cursor: ns-resize;
@@ -138,7 +138,7 @@
     }
 
     .handle-e {
-        right: -11px;
+        right: -18px;
         top: 50%;
         transform: translateY(-50%);
         cursor: ew-resize;
@@ -149,7 +149,7 @@
     }
 
     .handle-w {
-        left: -11px;
+        left: -18px;
         top: 50%;
         transform: translateY(-50%);
         cursor: ew-resize;
@@ -161,22 +161,22 @@
 
     /* Rotation Handle - Large blue circular style like Canva */
     .handle-rotate {
-        top: -80px;
+        top: -120px;
         left: 50%;
         transform: translateX(-50%);
         cursor: grab;
         background: linear-gradient(135deg, #3b82f6, #2563eb);
-        border: 3px solid #1d4ed8;
-        width: 44px;
-        height: 44px;
+        border: 4px solid #1d4ed8;
+        width: 72px;
+        height: 72px;
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4), 0 0 0 3px rgba(255, 255, 255, 0.6);
     }
 
     .handle-rotate::before {
-        top: -14px;
-        left: -14px;
-        right: -14px;
-        bottom: -14px;
+        top: -30px;
+        left: -30px;
+        right: -30px;
+        bottom: -30px;
     }
 
     .handle-rotate:hover {
@@ -190,7 +190,7 @@
     .handle-rotate::after {
         content: '↻';
         color: white;
-        font-size: 22px;
+        font-size: 36px;
         font-weight: bold;
         display: flex;
         align-items: center;
@@ -203,15 +203,32 @@
     /* Rotation connector line - longer neck */
     .rotate-connector {
         position: absolute;
-        top: -68px;
+        top: -100px;
         left: 50%;
-        width: 3px;
-        height: 55px;
+        width: 4px;
+        height: 80px;
         background: linear-gradient(to bottom, #3b82f6, #4f46e5);
         transform: translateX(-50%);
         pointer-events: none;
         border-radius: 2px;
         box-shadow: 0 0 4px rgba(59, 130, 246, 0.3);
+    }
+
+    /* Enhanced Auto-fill button */
+    .auto-fill-btn {
+        padding: 14px 32px !important;
+        font-size: 20px !important;
+        bottom: -80px !important;
+        border-radius: 9999px !important;
+        box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5) !important;
+        transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+    }
+    .auto-fill-btn:hover {
+        transform: translateX(-50%) rotate(var(--rotation, 0deg)) scale(1.1) !important;
+        background-color: #2563eb !important;
+    }
+    .auto-fill-btn:active {
+        transform: translateX(-50%) rotate(var(--rotation, 0deg)) scale(0.95) !important;
     }
 
     /* Drag feedback */
@@ -287,20 +304,6 @@
                 </button>
             </div>
 
-            <div id="left-upload-status"
-                class="hidden mb-6 p-3 rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50 to-white flex items-center gap-3">
-                <div class="shrink-0 w-9 h-9 rounded-full bg-blue-600/10 flex items-center justify-center">
-                    <svg class="animate-spin" width="18" height="18" viewBox="0 0 24 24">
-                        <circle cx="12" cy="12" r="10" stroke="rgb(37 99 235)" stroke-width="4" fill="none" opacity="0.2" />
-                        <path d="M12 2 a10 10 0 0 1 10 10" stroke="rgb(37 99 235)" stroke-width="4" fill="none" />
-                    </svg>
-                </div>
-                <div class="flex-1 min-w-0">
-                    <div id="left-upload-status-title" class="text-sm font-semibold text-blue-900">PDF wird verarbeitet…</div>
-                    <div id="left-upload-status-sub" class="text-xs text-blue-700 truncate">Bitte warten</div>
-                </div>
-            </div>
-
             <!-- Collision Warning -->
             <div id="collision-warning"
                 class="hidden mb-6 p-3 bg-red-100 border border-red-200 rounded-lg flex items-start gap-3 animate-pulse">
@@ -345,7 +348,16 @@
                 <div id="item-gallery" class="flex flex-wrap gap-2"></div>
             </div>
 
-            <div class="mb-6">
+            <div class="mb-6 relative">
+                <!-- Loader Overlay -->
+                <div id="left-upload-status" class="hidden absolute inset-0 bg-white/90 backdrop-blur-sm z-10 flex items-center justify-center gap-2 rounded-lg border border-blue-200">
+                    <svg class="animate-spin size-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span id="left-upload-status-title" class="text-sm font-medium text-blue-700">Verarbeite...</span>
+                </div>
+
                 <label
                     class="flex items-center justify-center w-full h-12 px-4 transition bg-white border-2 border-dashed border-blue-400 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer font-medium gap-2 text-sm">
                     <i data-lucide="upload"></i>
@@ -488,7 +500,7 @@
 
                         <!-- The Sheet - clips content like Canva -->
                         <div id="print-sheet"
-                            class="relative shadow-2xl bg-[#C2C5CC] transition-colors overflow-hidden select-none">
+                            class="relative shadow-2xl bg-[#C2C5CC] transition-colors select-none">
                             <!-- Rulers and grid will be added here -->
                             <div id="ruler-h"
                                 class="absolute h-6 -top-6 left-0 right-0 border-b border-slate-400/50 bg-white/40 backdrop-blur-sm">

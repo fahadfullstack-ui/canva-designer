@@ -719,8 +719,11 @@ $(document).ready(() => {
             if ($wrap.length) $wrap.removeClass('hidden');
             if ($bar.length) $bar.css('width', `${p}%`);
             if ($label.length) {
-                if (label) { $label.text(String(label)); $label.removeClass('hidden'); }
-                else $label.addClass('hidden');
+                // Also show total size in MB next to label
+                const totalMB = calculateTotalSizeMB();
+                const text = label || 'Speichern...';
+                $label.text(`${text} (${totalMB} MB)`);
+                $label.removeClass('hidden');
             }
             return;
         }
@@ -731,9 +734,19 @@ $(document).ready(() => {
     const setLeftUploadStatus = (visible, title, sub) => {
         const $box = $('#left-upload-status');
         if (!$box.length) return;
-        $box.toggleClass('hidden', !visible);
-        if (typeof title === 'string') $('#left-upload-status-title').text(title);
-        if (typeof sub === 'string') $('#left-upload-status-sub').text(sub);
+        
+        if (visible) {
+            $box.removeClass('hidden').css('display', 'flex');
+            const $title = $('#left-upload-status-title');
+            if ($title.length) {
+                // If title has spinner HTML inside (legacy), replace with text
+                // Actually, our new HTML structure has the spinner separate.
+                // Just update text.
+                $title.text(title || 'Verarbeite...');
+            }
+        } else {
+            $box.addClass('hidden').css('display', 'none');
+        }
     };
     const isCurrentSheetDirty = () => {
         if (state.currentSheetIndex === null) return state.items.length > 0;
@@ -892,7 +905,10 @@ $(document).ready(() => {
 
     // Constrain item within canvas boundaries (properly handles rotation)
     const constrainToBounds = (item, newX, newY, newW, newH) => {
+        // Relaxed constraints: allow item to be partially off-screen
+        // Just ensure it doesn't get completely lost (keep at least 1cm visible)
         const { width: formatW, height: formatH } = state.selectedFormat;
+        const minVisible = 1.0; 
 
         // Calculate rotated bounding box dimensions
         const rotation = item.rotation || 0;
@@ -908,35 +924,146 @@ $(document).ready(() => {
         const offsetX = (boundingW - newW) / 2;
         const offsetY = (boundingH - newH) / 2;
 
-        // Constrain position so rotated bounding box stays within canvas
         let constrainedX = newX;
         let constrainedY = newY;
 
-        // Left edge: item.x - offsetX >= 0
-        if (newX - offsetX < 0) constrainedX = offsetX;
-        // Top edge: item.y - offsetY >= 0
-        if (newY - offsetY < 0) constrainedY = offsetY;
-        // Right edge: item.x + newW + offsetX <= formatW
-        if (newX + newW + offsetX > formatW) constrainedX = formatW - newW - offsetX;
-        // Bottom edge: item.y + newH + offsetY <= formatH
-        if (newY + newH + offsetY > formatH) constrainedY = formatH - newH - offsetY;
+        // Ensure at least minVisible is inside
+        // Left: right edge must be > 0 + minVisible
+        // Right: left edge must be < formatW - minVisible
+        // Top: bottom edge must be > 0 + minVisible
+        // Bottom: top edge must be < formatH - minVisible
+        
+        // Bounding Box Left = x - offsetX
+        // Bounding Box Right = x - offsetX + boundingW
+        // Bounding Box Top = y - offsetY
+        // Bounding Box Bottom = y - offsetY + boundingH
 
-        // Clamp to valid range
-        constrainedX = Math.max(offsetX, Math.min(constrainedX, formatW - newW - offsetX));
-        constrainedY = Math.max(offsetY, Math.min(constrainedY, formatH - newH - offsetY));
-
-        // Constrain dimensions if too large
-        const maxW = formatW - 2 * offsetX;
-        const maxH = formatH - 2 * offsetY;
-        const constrainedW = Math.min(newW, maxW);
-        const constrainedH = Math.min(newH, maxH);
+        if (constrainedX - offsetX + boundingW < minVisible) constrainedX = minVisible + offsetX - boundingW;
+        if (constrainedX - offsetX > formatW - minVisible) constrainedX = formatW - minVisible + offsetX;
+        if (constrainedY - offsetY + boundingH < minVisible) constrainedY = minVisible + offsetY - boundingH;
+        if (constrainedY - offsetY > formatH - minVisible) constrainedY = formatH - minVisible + offsetY;
 
         return {
             x: parseFloat(constrainedX.toFixed(2)),
             y: parseFloat(constrainedY.toFixed(2)),
-            width: parseFloat(Math.max(0.5, constrainedW).toFixed(2)),
-            height: parseFloat(Math.max(0.5, constrainedH).toFixed(2))
+            width: parseFloat(Math.max(0.5, newW).toFixed(2)),
+            height: parseFloat(Math.max(0.5, newH).toFixed(2))
         };
+    };
+
+    const findBestPosition = (width, height, existingItems, formatW, formatH) => {
+        const gap = GAP_CM;
+        const items = [...existingItems];
+        
+        // Helper to check overlap with robust rotation handling
+        const checkOverlap = (cx, cy, cw, ch) => {
+             // Epsilon for floating point comparisons
+             const epsilon = 0.01;
+
+             // Check canvas bounds first
+             if (cx < -epsilon || cy < -epsilon || cx + cw > formatW + epsilon || cy + ch > formatH + epsilon) return true;
+             
+             return items.some(item => {
+                 // Calculate Rotated Bounding Box
+                 const r = (item.rotation || 0) * Math.PI / 180;
+                 const c = Math.abs(Math.cos(r));
+                 const s = Math.abs(Math.sin(r));
+                 const bbW = item.width * c + item.height * s;
+                 const bbH = item.width * s + item.height * c;
+                 
+                 // Center of item (rotation happens around center)
+                 const centerX = item.x + item.width / 2;
+                 const centerY = item.y + item.height / 2;
+                 
+                 // Top-Left of Bounding Box
+                 const iX = centerX - bbW / 2;
+                 const iY = centerY - bbH / 2;
+                 
+                 // AABB Check with epsilon (Standard intersection test)
+                 // If rectangles do NOT intersect, return false.
+                 // Overlap if: !(Right < Left || Left > Right || Bottom < Top || Top > Bottom)
+                 return !(cx + cw <= iX + epsilon || cx >= iX + bbW - epsilon || cy + ch <= iY + epsilon || cy >= iY + bbH - epsilon);
+             });
+        };
+
+        // Potential Y coordinates: 0 and bottom of every item + gap
+        // Also add top of every item to check for alignment
+        let candidateYs = [0];
+        items.forEach(item => {
+            const eff = getEffectiveSize(item);
+            // Center of item
+            const centerX = item.x + item.width / 2;
+            const centerY = item.y + item.height / 2;
+            // Top-Left of Bounding Box
+            const iY = centerY - eff.height / 2;
+            
+            candidateYs.push(iY + eff.height + gap);
+            candidateYs.push(iY + eff.height + 0.1); // Try small gap
+            candidateYs.push(iY + eff.height);       // Try no gap
+            candidateYs.push(iY);
+        });
+        candidateYs = [...new Set(candidateYs)].sort((a, b) => a - b);
+        candidateYs = candidateYs.filter(y => y < formatH);
+
+        for (const y of candidateYs) {
+            // Try Normal (0 deg)
+            let candidateXs = [0];
+            items.forEach(item => {
+                 const eff = getEffectiveSize(item);
+                 // Center of item
+                 const centerX = item.x + item.width / 2;
+                 // Top-Left of Bounding Box
+                 const iX = centerX - eff.width / 2;
+
+                 candidateXs.push(iX + eff.width + gap);
+                 candidateXs.push(iX + eff.width + 0.1); // Try small gap
+                 candidateXs.push(iX + eff.width);       // Try no gap
+                 candidateXs.push(iX); // Also try aligning left
+            });
+            // Also add formatW to candidates to check right alignment? No.
+            
+            candidateXs = [...new Set(candidateXs)].sort((a, b) => a - b);
+            
+            // Filter invalid Xs
+            const validXs = candidateXs.filter(x => x + width <= formatW);
+            
+            for (const x of validXs) {
+                if (!checkOverlap(x, y, width, height)) return { x, y, rotation: 0 };
+            }
+            
+            // Try Rotated (90 deg)
+            if (Math.abs(width - height) > 0.1) {
+                const validRotatedXs = candidateXs.filter(x => x + height <= formatW);
+                
+                for (const x of validRotatedXs) {
+                    // Check if rotated bounding box fits (height x width)
+                    if (!checkOverlap(x, y, height, width)) {
+                        // Found a spot for the BOUNDING BOX.
+                        // We need to return the item position such that its rotated bounding box is at (x,y).
+                        // Rotated Item has dimensions (height, width) visually.
+                        // Center of Rotated Item = (x + height/2, y + width/2)
+                        // TopLeft of Unrotated Item = Center - width/2, Center - height/2
+                        //                           = (x + height/2 - width/2, y + width/2 - height/2)
+                        
+                        return { 
+                            x: parseFloat((x + height/2 - width/2).toFixed(2)), 
+                            y: parseFloat((y + width/2 - height/2).toFixed(2)), 
+                            rotation: 90 
+                        };
+                    }
+                }
+            }
+        }
+        
+        // Fallback: Just place at bottom
+        const maxY = items.reduce((max, i) => {
+            const eff = getEffectiveSize(i);
+            const centerY = i.y + i.height / 2;
+            const iY = centerY - eff.height / 2;
+            return Math.max(max, iY + eff.height);
+        }, 0);
+        
+        return { x: 0, y: maxY + gap, rotation: 0 };
     };
 
     // Throttled update via requestAnimationFrame
@@ -1052,73 +1179,30 @@ $(document).ready(() => {
             if (totalCount >= MAX_ITEMS) return;
         });
 
-        itemsToPlace.sort((a, b) => Math.max(b.rawW, b.rawH) - Math.max(a.rawW, a.rawH));
-
-        let shelves = [];
-        let currentY = 0;
         const placedItems = [];
         let overflowCount = 0;
 
         itemsToPlace.forEach((item, index) => {
             item.id = `layout-${Date.now()}-${index}`;
-            let bestShelfIndex = -1;
-            let bestRotation = 0;
-            let minWaste = Infinity;
-
-            for (let i = 0; i < shelves.length; i++) {
-                const shelf = shelves[i];
-                const remainingW = formatW - shelf.currentX;
-                if (remainingW >= item.rawW && shelf.height >= item.rawH) {
-                    const waste = shelf.height - item.rawH;
-                    if (waste < minWaste) { minWaste = waste; bestShelfIndex = i; bestRotation = 0; }
-                }
-                if (remainingW >= item.rawH && shelf.height >= item.rawW) {
-                    const waste = shelf.height - item.rawW;
-                    if (waste < minWaste) { minWaste = waste; bestShelfIndex = i; bestRotation = 90; }
-                }
-            }
-
-            if (bestShelfIndex !== -1) {
-                const shelf = shelves[bestShelfIndex];
-
-                // Visual dimensions of the packed item
-                const VW = (bestRotation === 0) ? item.rawW : item.rawH;
-                const VH = (bestRotation === 0) ? item.rawH : item.rawW;
-
-                // Calculate centered position logic
-                // Visual Center = Shelf Current X + VW/2, Shelf Y + VH/2
-                // Item Pos = Visual Center - Item Width/2, Visual Center - Item Height/2
-                const cssX = shelf.currentX + VW / 2 - item.width / 2;
-                const cssY = shelf.y + VH / 2 - item.height / 2;
-
-                placedItems.push({ ...item, x: parseFloat(cssX.toFixed(2)), y: parseFloat(cssY.toFixed(2)), rotation: (item.rotation || 0) + bestRotation });
-                shelf.currentX += VW + GAP_CM;
+            
+            // Use Smart Placement (findBestPosition) for every item
+            // This ensures we fill gaps (holes) and pack densely
+            const pos = findBestPosition(item.rawW, item.rawH, placedItems, formatW, formatH);
+            
+            // Check if the item actually fits on the canvas
+            // findBestPosition tries to find a spot, but if canvas is full, it might return a Y that overflows
+            const placedW = (pos.rotation % 180 !== 0) ? item.rawH : item.rawW;
+            const placedH = (pos.rotation % 180 !== 0) ? item.rawW : item.rawH;
+            
+            if (pos.y + placedH <= formatH && pos.x + placedW <= formatW) {
+                placedItems.push({
+                    ...item,
+                    x: pos.x,
+                    y: pos.y,
+                    rotation: (item.rotation || 0) + pos.rotation
+                });
             } else {
-                // Logic to determine new shelf size/orientation
-                // Prefer keeping current orientation
-                let nW, nH, rot;
-
-                if (item.rawW <= formatW) {
-                    nW = item.rawW; nH = item.rawH; rot = 0;
-                } else if (item.rawH <= formatW) {
-                    nW = item.rawH; nH = item.rawW; rot = 90;
-                } else {
-                    overflowCount++; return;
-                }
-
-                if (currentY + nH <= formatH) {
-                    const VW = nW;
-                    const VH = nH;
-
-                    const cssX = 0 + VW / 2 - item.width / 2;
-                    const cssY = currentY + VH / 2 - item.height / 2;
-
-                    placedItems.push({ ...item, x: parseFloat(cssX.toFixed(2)), y: parseFloat(cssY.toFixed(2)), rotation: (item.rotation || 0) + rot });
-                    shelves.push({ y: currentY, height: nH, currentX: nW + GAP_CM });
-                    currentY += nH + GAP_CM;
-                } else {
-                    overflowCount++;
-                }
+                overflowCount++;
             }
         });
 
@@ -1618,9 +1702,76 @@ $(document).ready(() => {
         });
     };
 
+    const getClipStyle = (item) => {
+        const { width: fW, height: fH } = state.selectedFormat;
+        const cx = item.x + item.width / 2;
+        const cy = item.y + item.height / 2;
+        const rad = -(item.rotation || 0) * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        
+        const transform = (x, y) => {
+            const dx = x - cx;
+            const dy = y - cy;
+            const rx = dx * cos - dy * sin;
+            const ry = dx * sin + dy * cos;
+            return {
+                x: rx + item.width / 2,
+                y: ry + item.height / 2
+            };
+        };
+
+        const p1 = transform(0, 0);
+        const p2 = transform(fW, 0);
+        const p3 = transform(fW, fH);
+        const p4 = transform(0, fH);
+
+        const toPx = (v) => cmToPx(v).toFixed(1);
+        return `clip-path: polygon(${toPx(p1.x)}px ${toPx(p1.y)}px, ${toPx(p2.x)}px ${toPx(p2.y)}px, ${toPx(p3.x)}px ${toPx(p3.y)}px, ${toPx(p4.x)}px ${toPx(p4.y)}px);`;
+    };
+
+    // Calculate total size of uploaded images in MB
+    const calculateTotalSizeMB = () => {
+        let totalBytes = 0;
+        const uniqueFiles = new Set();
+        
+        const processItem = (item) => {
+             if (item.fileSize && !uniqueFiles.has(item.src)) {
+                totalBytes += item.fileSize;
+                uniqueFiles.add(item.src);
+            }
+        };
+
+        // Process active items
+        state.items.forEach(processItem);
+
+        // Process saved sheets
+        state.savedSheets.forEach((sheet, index) => {
+            // If this sheet is currently active, we already processed state.items (which is the latest version)
+            if (index === state.currentSheetIndex) return;
+            
+            if (sheet.items) {
+                sheet.items.forEach(processItem);
+            }
+        });
+        
+        return (totalBytes / (1024 * 1024)).toFixed(2);
+    };
+
     const updateUI = () => {
         // Render sheet tabs
         renderSheetTabs();
+
+        // Update Total MB in Save Button
+        const totalMB = calculateTotalSizeMB();
+        const $saveBtn = $('#save-design');
+        // Check if we already appended the size span
+        let $sizeSpan = $saveBtn.find('.size-info');
+        if (!$sizeSpan.length) {
+             $saveBtn.append(' <span class="size-info text-xs opacity-80 ml-1"></span>');
+             $sizeSpan = $saveBtn.find('.size-info');
+        }
+        $sizeSpan.text(`(${totalMB} MB)`);
 
         // Apply pan and zoom transforms
         $('#pan-layer').css('transform', `translate(${state.panX}px, ${state.panY}px)`);
@@ -1740,7 +1891,7 @@ $(document).ready(() => {
             <div class="canvas-item absolute cursor-move select-none flex items-center justify-center ${isSelected ? 'item-active' : ''} ${isColliding ? 'item-collision' : ''} ${isDragOrResize ? (state.isDragging ? 'item-dragging' : 'item-resizing') : ''}" 
                  data-item-id="${item.id}"
                  style="left: ${cmToPx(item.x)}px; top: ${cmToPx(item.y)}px; width: ${cmToPx(item.width)}px; height: ${cmToPx(item.height)}px; transform: rotate(${item.rotation}deg); z-index: ${isSelected ? 10 : 1};">
-                ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-contain pointer-events-none" draggable="false">` : `
+                ${item.isPreviewable ? `<img src="${item.src}" class="w-full h-full object-contain pointer-events-none" draggable="false" style="${getClipStyle(item)}">` : `
                     <div class="w-full h-full bg-slate-200 border-2 border-slate-300 flex flex-col items-center justify-center p-2 text-center pointer-events-none overflow-hidden">
                         <i data-lucide="file-text" class="text-slate-400 mb-1"></i>
                         <span class="text-[10px] text-slate-600 font-mono break-all leading-tight">${item.name}</span>
@@ -1752,8 +1903,9 @@ $(document).ready(() => {
                 ${isColliding ? `<div class="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl-sm"><i data-lucide="alert-triangle" class="size-2"></i></div>` : ''}
                 ${isSelected ? createResizeHandles() : ''}
                 ${isSelected ? `
-                    <button class="auto-fill-btn absolute -bottom-12 left-1/2 transform -translate-x-1/2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 whitespace-nowrap z-30 transition-all hover:scale-105" style="transform: translateX(-50%) rotate(${-item.rotation}deg)">
-                        <i data-lucide="grid-3x3" class="size-3"></i>
+                    <button class="auto-fill-btn absolute left-1/2 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-full shadow-lg flex items-center gap-1.5 whitespace-nowrap z-30" 
+                            style="--rotation: ${-item.rotation}deg; transform: translateX(-50%) rotate(var(--rotation));">
+                        <i data-lucide="grid-3x3" class="size-4"></i>
                         Automatisch ausfüllen
                     </button>` : ''}
             </div>
@@ -2034,15 +2186,32 @@ $(document).ready(() => {
                 }
 
                 const isImage = ['png', 'jpg', 'jpeg', 'svg', 'webp'].includes(ext);
+                if (isImage) setLeftUploadStatus(true, 'Bild wird verarbeitet…', file.name);
+                
                 const detectedDpi = isImage ? await detectImageDPI(file) : null;
                 const finalDpi = FALLBACK_DPI;
                 const groupId = generateId('grp');
-                const baseItem = { id: generateId('upload'), groupId, name: file.name, type: ext, x: 0, y: 0, rotation: 0, originalDpi: finalDpi, detected: false, quantity: 1 };
+                const baseItem = { 
+                    id: generateId('upload'), 
+                    groupId, 
+                    name: file.name, 
+                    type: ext, 
+                    x: 0, 
+                    y: 0, 
+                    rotation: 0, 
+                    originalDpi: finalDpi, 
+                    detected: false, 
+                    quantity: 1,
+                    fileSize: file.size // Store file size for MB calculation
+                };
 
                 if (isImage) {
                     // Use compression for large images
                     const compressed = await compressImage(file);
-                    if (!compressed) continue;
+                    if (!compressed) {
+                        setLeftUploadStatus(false);
+                        continue;
+                    }
 
                     const img = new Image();
                     await new Promise(resolve => {
@@ -2053,6 +2222,7 @@ $(document).ready(() => {
 
                             const fitW = wCm;
                             const fitH = hCm;
+                            // Start centered by default, but smart placement will override in manual mode
                             const startX = (state.selectedFormat.width - fitW) / 2;
                             const startY = (state.selectedFormat.height - fitH) / 2;
 
@@ -2075,6 +2245,7 @@ $(document).ready(() => {
                     });
 
                     // Update progress
+                    setLeftUploadStatus(false);
                     $('#upload-label').text(`${fileIndex + 1}/${files.length} verarbeitet...`);
                 } else {
                     newUploadedItems.push({ ...baseItem, src: null, width: 21.0, height: 29.7, originalWidth: 21.0, originalHeight: 29.7, aspectRatio: 21.0 / 29.7, isPreviewable: false });
@@ -2086,8 +2257,25 @@ $(document).ready(() => {
 
             // Skip auto-layout in manual mode - use pre-calculated positions
             if (state.manualMode) {
-                const placed = newUploadedItems.map((it, idx) => ({ ...it, id: generateId('item') }));
-                state.items = [...state.items, ...placed];
+                // Use Smart Placement to find the next available spot
+                const placed = [];
+                // Clone existing items to simulate progressive placement
+                let tempItems = [...state.items];
+                
+                for (const item of newUploadedItems) {
+                    const pos = findBestPosition(item.width, item.height, tempItems, state.selectedFormat.width, state.selectedFormat.height);
+                    const newItem = {
+                        ...item,
+                        id: generateId('item'),
+                        x: pos.x,
+                        y: pos.y,
+                        rotation: pos.rotation
+                    };
+                    placed.push(newItem);
+                    tempItems.push(newItem);
+                }
+                
+                state.items = tempItems;
             } else {
                 const currentCount = state.items.length;
                 const placed = newUploadedItems.map((it, idx) => ({ ...it, id: generateId('item'), x: (currentCount + idx) * 0.5, y: (currentCount + idx) * 0.5 }));
